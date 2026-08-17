@@ -3,3 +3,5 @@
 # on Python 3.12.4.
 google-play-scraper==1.2.7
 requests==2.34.2
+psycopg[binary]==3.2.10
+python-dotenv==1.1.1

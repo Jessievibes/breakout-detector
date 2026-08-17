@@ -1,0 +1,63 @@
+name: daily
+
+# Sequential by design: enrich must see the apps discovery just registered, and scoring
+# (Phase 3) must run after enrich. Actions owns that ordering — pg_cron cannot see whether
+# the scrape succeeded.
+
+on:
+  schedule:
+    - cron: '17 6 * * *' # off the hour; Actions cron drifts and clusters on :00
+  workflow_dispatch:
+    inputs:
+      day:
+        description: 'UTC day this run covers (YYYY-MM-DD). Blank = today. Set when replaying a missed run.'
+        type: string
+      enrich_limit:
+        description: 'Apps to enrich this run'
+        type: string
+        default: '400'
+
+concurrency:
+  group: daily
+  cancel-in-progress: false
+
+permissions:
+  actions: write # the keepalive step re-enables this workflow
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Apply schema (idempotent)
+        run: python -m src.jobs.migrate
+
+      - name: Discover
+        run: python -m src.jobs.discover
+
+      - name: Enrich + snapshot
+        run: |
+          python -m src.jobs.enrich \
+            ${{ inputs.day && format('--day {0}', inputs.day) || '' }} \
+            --limit ${{ inputs.enrich_limit || '400' }}
+
+      # GitHub disables scheduled workflows after 60 days without repository activity, and a
+      # scraper that only writes to Postgres generates none. Re-enabling on every run resets
+      # that clock without needing a dummy commit. Supabase's free tier pauses on a similar
+      # inactivity rule, so this job dying silently would cascade into both.
+      - name: Keepalive
+        if: always()
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/daily.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}

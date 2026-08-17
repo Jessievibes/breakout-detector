@@ -1,0 +1,160 @@
+"""Unit tests for the guards and parsers — no network, no database.
+
+These cover the logic that decides whether a number reaches the database, which is the
+logic most likely to fail silently. Run with:
+
+    python -m unittest discover -s tests -v
+"""
+
+from __future__ import annotations
+
+import unittest
+from datetime import date
+
+from src.lib.guards import (
+    NullRateTracker,
+    ParserFailure,
+    SuspectData,
+    apple_feed_looks_throttled,
+    check_install_delta,
+    check_play_detail,
+    classify_rating_drop,
+)
+from src.lib.http import FetchStats
+from src.stores.play.detail import parse_released
+from src.stores.play.discover import install_band
+
+
+class TestPlayDetailGuard(unittest.TestCase):
+    def test_accepts_exact_installs(self):
+        check_play_detail({"realInstalls": 470_723, "minInstalls": 100_000, "ratings": 8_000}, "x")
+
+    def test_rejects_null_installs_with_ratings(self):
+        """The core parser-drift case: ratings present, installs missing."""
+        with self.assertRaises(ParserFailure):
+            check_play_detail({"realInstalls": None, "ratings": 36_000_000}, "com.spotify.music")
+
+    def test_rejects_banded_only(self):
+        """Falling back to the band floor is not an exact count and must not pass as one."""
+        with self.assertRaises(ParserFailure):
+            check_play_detail({"realInstalls": None, "minInstalls": 1_000_000}, "x")
+
+    def test_allows_genuinely_empty_app(self):
+        """A brand-new app with no ratings and no installs is plausible, not drift."""
+        check_play_detail({"realInstalls": None, "minInstalls": None, "ratings": None}, "x")
+
+
+class TestDeltaGuards(unittest.TestCase):
+    def test_install_increase_ok(self):
+        check_install_delta(1_000, 1_200, "x")
+
+    def test_install_decrease_rejected(self):
+        """Play never decrements lifetime installs, so a fall is our bug."""
+        with self.assertRaises(SuspectData):
+            check_install_delta(1_200, 1_000, "x")
+
+    def test_missing_readings_are_not_errors(self):
+        check_install_delta(None, 1_000, "x")
+        check_install_delta(1_000, None, "x")
+
+    def test_flat_is_ok(self):
+        check_install_delta(1_000, 1_000, "x")
+
+    def test_rating_drop_is_relaunch_not_failure(self):
+        """iOS rating counts legitimately reset on release — a signal, not a parse error."""
+        self.assertEqual(classify_rating_drop(5_000, 12), "relaunch")
+        self.assertIsNone(classify_rating_drop(12, 5_000))
+        self.assertIsNone(classify_rating_drop(None, 5_000))
+
+
+class TestNullRateTracker(unittest.TestCase):
+    def test_silent_below_threshold(self):
+        t = NullRateTracker("t")
+        for _ in range(99):
+            t.record(True)
+        t.record(False, "one miss")
+        t.check()  # 1% — normal attrition
+
+    def test_fails_above_threshold(self):
+        t = NullRateTracker("t")
+        for _ in range(80):
+            t.record(True)
+        for i in range(20):
+            t.record(False, f"miss {i}")
+        with self.assertRaises(ParserFailure):
+            t.check()  # 20% — Google changed the page
+
+    def test_small_samples_do_not_trip(self):
+        """Two failures out of three is not evidence; it is a tiny batch."""
+        t = NullRateTracker("t")
+        t.record(True)
+        t.record(False, "a")
+        t.record(False, "b")
+        t.check()
+
+    def test_examples_are_capped(self):
+        t = NullRateTracker("t")
+        for i in range(50):
+            t.record(False, f"miss {i}")
+        self.assertEqual(len(t.examples), 5)
+
+
+class TestAppleThrottleDetection(unittest.TestCase):
+    def test_empty_and_linkless_is_throttled(self):
+        self.assertTrue(apple_feed_looks_throttled("<feed></feed>", 0))
+
+    def test_empty_with_links_is_a_real_last_page(self):
+        self.assertFalse(
+            apple_feed_looks_throttled('<feed><link rel="next" href="..."/></feed>', 0)
+        )
+
+    def test_populated_feed_is_never_throttled(self):
+        self.assertFalse(apple_feed_looks_throttled("<feed></feed>", 50))
+
+
+class TestParsers(unittest.TestCase):
+    def test_release_date_formats(self):
+        self.assertEqual(parse_released("May 27, 2014"), date(2014, 5, 27))
+        self.assertEqual(parse_released("27 May 2014"), date(2014, 5, 27))
+        self.assertEqual(parse_released("September 6, 2013"), date(2013, 9, 6))
+
+    def test_release_date_junk(self):
+        for junk in (None, "", "  ", "coming soon", 12345):
+            self.assertIsNone(parse_released(junk))
+
+    def test_install_band(self):
+        self.assertEqual(install_band("1,000,000+"), 1_000_000)
+        self.assertEqual(install_band("500+"), 500)
+        self.assertIsNone(install_band(None))
+        self.assertIsNone(install_band("Varies"))
+
+
+class TestFetchStats(unittest.TestCase):
+    def test_anomaly_rate_counts_empty_200s(self):
+        s = FetchStats()
+        s.requests = 100
+        s.empty_200 = 8
+        s.http_403 = 4
+        self.assertAlmostEqual(s.anomaly_rate, 0.12)
+
+    def test_no_requests_no_division_error(self):
+        self.assertEqual(FetchStats().anomaly_rate, 0.0)
+
+    def test_serializes_codes_as_strings(self):
+        s = FetchStats()
+        s.requests = 1
+        s.codes[200] += 1
+        self.assertEqual(s.as_dict()["codes"], {"200": 1})
+
+
+class TestDbColumnAllowlist(unittest.TestCase):
+    def test_refuses_unknown_column(self):
+        """last_snapshot_metric interpolates a column name, so it must be allowlisted."""
+        from src.lib import db
+
+        with self.assertRaises(ValueError):
+            db.last_snapshot_metric(None, 1, "install_exact; drop table app")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
