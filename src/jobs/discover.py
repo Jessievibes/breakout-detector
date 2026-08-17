@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date, datetime, timezone
 
 from ..lib import db, log
-from ..lib.http import Blocked, play_fetcher
+from ..lib.http import Blocked, apple_fetcher, play_fetcher
+from ..stores.ios import feeds as ios_feeds
 from ..stores.play import discover as play_discover
 
 
@@ -58,21 +60,65 @@ def run_play(conn, rl: log.RunLog, *, channels: set[str], dev_seeds: int) -> dic
     return per_channel
 
 
+def run_ios(conn, rl: log.RunLog, *, day: date) -> dict:
+    """iOS discovery — the only true day-zero channel in the system.
+
+    Apple still publishes new-app feeds and all three variants work, so apps are catchable on
+    release day. Chart ranks are written here rather than in enrich because this job is
+    already paying for the chart fetches, and `upsert_ranks` lets rank and metrics land in
+    either order.
+    """
+    fetcher = apple_fetcher()
+    per_channel: dict[str, dict] = {}
+    total_new = 0
+
+    print("[iOS] new-app feeds")
+    new_apps = ios_feeds.discover_new(fetcher)
+    new_count = db.insert_apps_bulk(conn, "ios", new_apps)
+    conn.commit()
+    per_channel["newapps_feed"] = {"found": len(new_apps), "new": new_count}
+    total_new += new_count
+    print(f"  → newapps_feed: {len(new_apps)} ids, {new_count} new")
+
+    print("[iOS] chart feeds (discovery + rank)")
+    chart_apps, ranks = ios_feeds.fetch_chart_ranks(fetcher)
+    chart_count = db.insert_apps_bulk(conn, "ios", chart_apps)
+    conn.commit()
+    ranked = db.upsert_ranks(conn, "ios", ranks, day)
+    conn.commit()
+    per_channel["chart"] = {"found": len(chart_apps), "new": chart_count, "ranked": ranked}
+    total_new += chart_count
+    print(f"  → chart: {len(chart_apps)} ids, {chart_count} new, {ranked} ranks written")
+
+    rl.update(ios_channels=per_channel, ios_new=total_new, ios_http=fetcher.stats.as_dict())
+    return per_channel
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Discover new app ids")
     ap.add_argument(
+        "--stores", default="play,ios", help="comma-separated subset of play,ios"
+    )
+    ap.add_argument(
         "--channels",
         default="chart,search,developer",
-        help="comma-separated subset of chart,search,developer",
+        help="Play channels: comma-separated subset of chart,search,developer",
     )
     ap.add_argument("--dev-seeds", type=int, default=40, help="developer pages to crawl (D2)")
+    ap.add_argument("--day", help="UTC day this run covers (YYYY-MM-DD); defaults to today")
     args = ap.parse_args()
+
     channels = {c.strip() for c in args.channels.split(",") if c.strip()}
+    stores = {s.strip() for s in args.stores.split(",") if s.strip()}
+    day = date.fromisoformat(args.day) if args.day else datetime.now(timezone.utc).date()
 
     with log.run("discover") as rl:
         try:
             with db.connect() as conn:
-                run_play(conn, rl, channels=channels, dev_seeds=args.dev_seeds)
+                if "play" in stores:
+                    run_play(conn, rl, channels=channels, dev_seeds=args.dev_seeds)
+                if "ios" in stores:
+                    run_ios(conn, rl, day=day)
         except Blocked as e:
             # Spec §6.4: the IP is burning. Die loudly; the discovered ids that were
             # already committed stay, and the run goes red.

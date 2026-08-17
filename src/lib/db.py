@@ -282,6 +282,80 @@ def last_snapshot_metric(conn, app_id: int, column: str) -> int | None:
         return row["v"] if row else None
 
 
+def upsert_ranks(conn, store: str, ranks: dict[str, int], day: date) -> int:
+    """Write chart positions into today's snapshot rows.
+
+    Runs from the discovery job, before enrichment fills in the metrics — the upsert lets
+    the two halves land in either order. `least` keeps the *best* rank when an app charts in
+    several genres, and ignores nulls, so a metrics-only row is upgraded rather than wiped.
+
+    Apps not yet in `app` are skipped by the join rather than inserted: rank without identity
+    is not useful, and discovery has already registered everything it saw.
+    """
+    if not ranks:
+        return 0
+    sids, positions = zip(*ranks.items())
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into snapshot (app_id, day, best_rank)
+            select a.id, %s::date, t.rank
+              from unnest(%s::text[], %s::int[]) as t(sid, rank)
+              join app a on a.store = %s::store_kind and a.store_app_id = t.sid
+            on conflict (app_id, day) do update
+               set best_rank = least(snapshot.best_rank, excluded.best_rank)
+            """,
+            [day, list(sids), list(positions), store],
+        )
+        return cur.rowcount or 0
+
+
+def backfill_queue(conn, store: str, limit: int) -> list[dict]:
+    """Apps whose review history has never been pulled, oldest-discovered first.
+
+    Oldest-first matters: review history is finite and capped at 500, so an app discovered
+    days ago is closer to losing early history off the end of the feed than one found today.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, store_app_id, name, released
+              from app
+             where store = %s and reviews_backfilled = false and delisted = false
+             order by first_seen
+             limit %s
+            """,
+            [store, limit],
+        )
+        return cur.fetchall()
+
+
+def insert_review_events(conn, app_id: int, reviews: list[dict], country: str = "us") -> int:
+    """Bulk-insert reviews. Idempotent on (app_id, review_id)."""
+    if not reviews:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            insert into review_event (app_id, review_id, posted_at, rating, version, country)
+            values (%s, %s, %s, %s, %s, %s)
+            on conflict (app_id, review_id) do nothing
+            """,
+            [
+                (app_id, r["review_id"], r["posted_at"], r.get("rating"), r.get("version"), country)
+                for r in reviews
+            ],
+        )
+        return cur.rowcount or 0
+
+
+def mark_backfilled(conn, app_id: int) -> None:
+    """Flip the one-way flag. Only call after a *complete* page walk — a partial history
+    marked complete is never revisited and the gap becomes permanent (spec §6.3)."""
+    with conn.cursor() as cur:
+        cur.execute("update app set reviews_backfilled = true where id = %s", [app_id])
+
+
 def apply_sql_file(conn, path: str) -> None:
     with open(path) as f:
         sql = f.read()

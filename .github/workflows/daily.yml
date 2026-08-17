@@ -30,6 +30,9 @@ jobs:
     timeout-minutes: 50
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Python block-buffers stdout when it is not a TTY, so without this the whole
+      # log lands in one dump at the end and a hung job looks identical to a silent one.
+      PYTHONUNBUFFERED: '1'
     steps:
       - uses: actions/checkout@v5
 

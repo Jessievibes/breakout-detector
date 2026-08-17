@@ -9,7 +9,7 @@ logic most likely to fail silently. Run with:
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import date, timezone
 
 from src.lib.guards import (
     NullRateTracker,
@@ -241,6 +241,125 @@ class TestDegradationGuard(unittest.TestCase):
         for _ in range(5):
             f._record_call(False)  # 100% failing, but only 5 calls
         self.assertEqual(f.stats.calls, 5)
+
+
+REVIEW_XML = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:im="http://itunes.apple.com/rss">
+  <link rel="next" href="https://example/page=2"/>
+  <entry>
+    <id>https://itunes.apple.com/us/app/id123</id>
+    <im:name>The App Itself</im:name>
+  </entry>
+  <entry>
+    <id>11111111</id>
+    <updated>2026-08-15T20:56:55-07:00</updated>
+    <im:rating>5</im:rating>
+    <im:version>2.1.0</im:version>
+  </entry>
+  <entry>
+    <id>22222222</id>
+    <updated>2026-08-16T02:00:00+02:00</updated>
+    <im:rating>1</im:rating>
+  </entry>
+</feed>"""
+
+
+class TestAppleReviewParsing(unittest.TestCase):
+    def test_skips_the_app_info_entry(self):
+        """The feed's first entry is often the app, not a review. It has no im:rating."""
+        from src.stores.ios.reviews import parse_page
+
+        self.assertEqual(len(parse_page(REVIEW_XML)), 2)
+
+    def test_normalizes_offsets_to_utc(self):
+        """Apple emits local offsets. Storing them unconverted would scatter one day's
+        reviews across two day-buckets in review_daily."""
+        from src.stores.ios.reviews import parse_page
+
+        first = parse_page(REVIEW_XML)[0]
+        self.assertEqual(first["posted_at"].tzinfo, timezone.utc)
+        self.assertEqual(first["posted_at"].isoformat(), "2026-08-16T03:56:55+00:00")
+        second = parse_page(REVIEW_XML)[1]
+        self.assertEqual(second["posted_at"].isoformat(), "2026-08-16T00:00:00+00:00")
+
+    def test_extracts_rating_and_version(self):
+        from src.stores.ios.reviews import parse_page
+
+        r = parse_page(REVIEW_XML)[0]
+        self.assertEqual(r["rating"], 5)
+        self.assertEqual(r["version"], "2.1.0")
+        self.assertIsNone(parse_page(REVIEW_XML)[1]["version"])
+
+    def test_malformed_xml_yields_nothing_not_an_exception(self):
+        from src.stores.ios.reviews import parse_page
+
+        self.assertEqual(parse_page("<not xml"), [])
+
+
+class TestAppleLookupNormalize(unittest.TestCase):
+    def test_maps_fields_and_dates(self):
+        from src.stores.ios.lookup import normalize
+
+        row = normalize(
+            {
+                "trackId": 12345,
+                "trackName": "Test App",
+                "sellerName": "Test Co",
+                "artistId": 999,
+                "primaryGenreName": "Utilities",
+                "releaseDate": "2026-06-01T07:00:00Z",
+                "price": 0,
+                "userRatingCount": 42,
+                "averageUserRating": 4.66666,
+                "version": "1.2",
+            }
+        )
+        self.assertEqual(row["store_app_id"], "12345")
+        self.assertEqual(row["released"], date(2026, 6, 1))
+        self.assertEqual(row["rating_count"], 42)
+        self.assertEqual(row["avg_rating"], 4.6667)
+
+    def test_install_fields_are_null_on_ios(self):
+        """Apple publishes no install count at any granularity. Never invent one."""
+        from src.stores.ios.lookup import normalize
+
+        row = normalize({"trackId": 1, "trackName": "x"})
+        self.assertIsNone(row["install_exact"])
+        self.assertIsNone(row["install_min"])
+
+    def test_brand_new_app_with_no_ratings_is_valid(self):
+        """A zero-rating app is the most interesting kind here, not a parse failure."""
+        from src.stores.ios.lookup import normalize
+
+        row = normalize({"trackId": 7, "trackName": "Brand New"})
+        self.assertIsNone(row["rating_count"])
+        self.assertEqual(row["store_app_id"], "7")
+
+    def test_batches_respect_the_200_limit(self):
+        from src.stores.ios.lookup import batches
+
+        chunks = list(batches([str(i) for i in range(450)]))
+        self.assertEqual([len(c) for c in chunks], [200, 200, 50])
+
+
+class TestAppleFeedParsing(unittest.TestCase):
+    def test_single_entry_object_is_tolerated(self):
+        """Apple emits an object instead of a list when a feed has exactly one entry."""
+        import json
+
+        from src.stores.ios.feeds import _entries, _track_id
+
+        one = json.dumps({"feed": {"entry": {"id": {"attributes": {"im:id": "555"}}}}})
+        entries = _entries(one)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(_track_id(entries[0]), "555")
+
+    def test_empty_and_malformed_feeds(self):
+        from src.stores.ios.feeds import _entries
+
+        self.assertEqual(_entries(None), [])
+        self.assertEqual(_entries("not json"), [])
+        self.assertEqual(_entries('{"feed":{}}'), [])
 
 
 class TestDbColumnAllowlist(unittest.TestCase):

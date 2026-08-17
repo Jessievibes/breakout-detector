@@ -1,0 +1,60 @@
+name: backfill
+
+# Separate from `daily` on purpose. Review pulls are the slow, rate-limited part of the
+# system — at Apple's ~20 req/min a deep app costs ten requests — and running them inside
+# daily's 50-minute budget would starve enrichment and scoring.
+#
+# Time-boxed rather than count-boxed: the job stops cleanly at its deadline and the
+# remainder carries to the next run. Four runs a day at 40 minutes covers roughly 320 apps,
+# comfortably above expected discovery volume.
+
+on:
+  schedule:
+    - cron: '43 */6 * * *' # off the hour; Actions cron clusters on :00
+  workflow_dispatch:
+    inputs:
+      budget_minutes:
+        description: 'Stop after this many minutes'
+        type: string
+        default: '40'
+
+concurrency:
+  group: backfill
+  cancel-in-progress: false
+
+permissions:
+  actions: write # keepalive, same 60-day rule as daily
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Python block-buffers stdout when it is not a TTY, so without this the whole
+      # log lands in one dump at the end and a hung job looks identical to a silent one.
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 'Preflight: config shape'
+        run: python -m src.jobs.preflight config
+
+      - name: 'Preflight: database reachable'
+        run: python -m src.jobs.preflight connect
+
+      - name: Backfill review history
+        run: python -m src.jobs.backfill --budget-minutes ${{ inputs.budget_minutes || '40' }}
+
+      - name: Keepalive
+        if: always()
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/backfill.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}
