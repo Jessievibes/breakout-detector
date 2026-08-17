@@ -1,0 +1,5 @@
+# Pinned deliberately (spec §3): the Play parser breaks when Google changes page layout,
+# so an unpinned bump is an unannounced production change. Verified working 2026-08-17
+# on Python 3.12.4.
+google-play-scraper==1.2.7
+requests==2.34.2

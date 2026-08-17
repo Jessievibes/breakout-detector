@@ -1,0 +1,55 @@
+name: phase0-validate
+
+# Phase 0 exists to answer one question the residential baseline cannot: does a GitHub
+# Actions runner IP survive both stores? Manual dispatch only — this is a spike, not a
+# scheduled job. The result table is committed back as VALIDATION.md so the decision is
+# recorded in the repo rather than in a log that expires.
+
+on:
+  workflow_dispatch:
+    inputs:
+      quick:
+        description: 'Reduced sample (~3 min) instead of full run (~20 min)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: validate
+  cancel-in-progress: false
+
+permissions:
+  contents: write # to commit VALIDATION.md
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run validation spike
+        id: spike
+        continue-on-error: true # a failed gate must still commit its report
+        run: python spike/validate.py ${{ inputs.quick && '--quick' || '' }}
+
+      - name: Commit result table
+        if: always()
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add VALIDATION.md
+          git diff --staged --quiet || git commit -m 'Phase 0: validation results from Actions runner'
+          git push
+
+      - name: Surface the verdict
+        if: steps.spike.outcome == 'failure'
+        run: |
+          echo '::error::Phase 0 gates failed from the Actions runner. See VALIDATION.md.'
+          exit 1
