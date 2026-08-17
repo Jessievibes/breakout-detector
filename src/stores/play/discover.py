@@ -1,20 +1,29 @@
 """Play new-app discovery.
 
-Phase 0 measured every candidate channel. The honest summary (see FINDINGS.md §3): Play
-carries the best signal in the system — exact daily installs — and the worst discovery.
-`NEW_FREE`/`NEW_PAID` are dead, sitemaps are dateless and mixed with books, and
-cross-store name matching from iOS finds only ~17%. What is left, all verified 2026-08-17:
+`NEW_FREE`/`NEW_PAID` are dead, sitemaps are dateless and mixed with books, and cross-store
+name matching from iOS finds only ~17%. Three channels survive, all verified 2026-08-17:
 
-    D1 search sweep       — works once wrapped; ranks by popularity, so young-app recall is poor
-    D2 developer pages    — `developer?id=<NAME>` 200 + parseable (`dev?id=` is 404)
-    D4 charts/categories  — `/store/apps/top` ~95 ids, `/store/apps/category/<CAT>` 43–62
+    D1 search sweep       — works once wrapped; THE young-app channel (see below)
+    D2 developer pages    — two URL forms, numeric vs name; high precision, needs seeds
+    D4 charts/categories  — `/store/apps/top` ~95 ids, category pages 43–62
 
-D3 (similar apps) is parked: `similar?id=` is 404, so it would need the detail page's
-similar cluster parsed out. Phase 5 work.
+**Search is where new Play apps come from.** Measured on the first live batch, not inferred:
 
-Consequence to keep in mind while reading dashboard rows: Play discovery *lags*. Apps are
-generally found once they have traction, not on release day. iOS is where day-zero
-detection lives.
+    channel   enriched   under 120d   median age
+    search        80        42 (53%)      115d      youngest: 1 day
+    chart        147         1 ( 1%)     2079d      youngest: 104 days
+
+Charts are a *terrible* youth channel — their median find is five and a half years old, which
+makes sense: charting is what breaking out looks like, so by then it has happened. Their real
+value is supplying developer names to seed D2.
+
+This corrects the Phase 0 conclusion recorded here earlier, which held that search found no
+young apps. That test stratified by a 100,000-install threshold — coarse enough to put nearly
+the entire store in one bucket — and so measured nothing. The signal lives below 1,000
+installs and is strongest below 100.
+
+D3 (similar apps) is parked: `similar?id=` is 404, so it would need the detail page's similar
+cluster parsed out. Phase 5 work.
 """
 
 from __future__ import annotations
@@ -47,11 +56,19 @@ DEV_NUMERIC_URL = "https://play.google.com/store/apps/dev?id={dev}&hl=en&gl=us"
 TOP_URL = "https://play.google.com/store/apps/top?hl=en&gl=us"
 CATEGORY_URL = "https://play.google.com/store/apps/category/{cat}?hl=en&gl=us"
 
-# Install-band ceiling below which a search hit is a plausible young candidate. Search
-# results carry `installs` for free while release date costs a detail fetch, so this is the
-# cheapest available youth proxy — though Phase 0's quick run could not yet prove it beats
-# random. Treated as an ordering hint, never as a filter that drops apps.
-LOW_BAND = 100_000
+# Install-band thresholds for youth. Search results carry `installs` for free while release
+# date costs a detail fetch, so this is the cheapest youth signal available before enrichment.
+#
+# Calibrated on the first live batch (search-discovered, n=80), NOT guessed:
+#     <100 installs   -> 93% under 120 days old, median age 19d
+#     100-1k          -> 43%, median 152d
+#     1k-10k          -> 20%, median 284d
+#
+# Phase 0 tested this with a 100,000 threshold and called it "no better than random". That
+# threshold was three orders of magnitude too coarse — nearly every app on the store falls
+# under it, so the strata were indistinguishable. The signal is real and lives below 1,000.
+VERY_LOW_BAND = 100
+LOW_BAND = 1_000
 
 CATEGORIES = [
     "GAME_PUZZLE", "GAME_CASUAL", "GAME_ARCADE", "GAME_ACTION", "GAME_SIMULATION",
@@ -100,7 +117,7 @@ def _has_app_links(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def search_sweep(fetcher: Fetcher, terms: list[str] | None = None) -> list[tuple[str, str]]:
+def search_sweep(fetcher: Fetcher, terms: list[str] | None = None) -> list[tuple[str, str, int | None]]:
     """Sweep keywords, returning (app_id, 'search') pairs, low-install candidates first.
 
     Wrapping is mandatory, not defensive: google-play-scraper 1.2.7 raises TypeError from
@@ -126,14 +143,16 @@ def search_sweep(fetcher: Fetcher, terms: list[str] | None = None) -> list[tuple
                 banded[aid] = install_band(h.get("installs"))
         print(f"  search {term!r}: {len(hits)} hits (pool {len(banded)})")
 
-    def sort_key(item: tuple[str, int | None]) -> tuple[int, int]:
-        aid, band = item
-        if band is None:
-            return (1, 0)
-        return (0, band) if band < LOW_BAND else (2, band)
-
-    ordered = sorted(banded.items(), key=sort_key)
-    return [(aid, "search") for aid, _ in ordered]
+    # Smallest band first: the enrich queue consumes this order, and enrichment capacity is
+    # the scarce resource. Unknown bands sort after known-small ones but before known-large.
+    ordered = sorted(
+        banded.items(),
+        key=lambda item: (item[1] is None, item[1] if item[1] is not None else 0),
+    )
+    tiny = sum(1 for _, b in ordered if b is not None and b < VERY_LOW_BAND)
+    small = sum(1 for _, b in ordered if b is not None and b < LOW_BAND)
+    print(f"  band profile: {tiny} under {VERY_LOW_BAND} installs, {small} under {LOW_BAND}")
+    return [(aid, "search", band) for aid, band in ordered]
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +180,7 @@ def developer_urls(name: str | None, developer_id: str | None) -> list[str]:
     return urls
 
 
-def developer_crawl(fetcher: Fetcher, developers: list[dict]) -> list[tuple[str, str]]:
+def developer_crawl(fetcher: Fetcher, developers: list[dict]) -> list[tuple[str, str, None]]:
     """Crawl developer pages for sibling apps.
 
     Highest-precision Play channel: a developer already in the database shipping something
@@ -193,7 +212,7 @@ def developer_crawl(fetcher: Fetcher, developers: list[dict]) -> list[tuple[str,
         # URL rule has drifted again, so make it visible rather than silently thin.
         print(f"  ! {len(empty)}/{len(developers)} developer pages yielded nothing: {empty[:5]}")
 
-    return [(aid, "developer") for aid in sorted(found)]
+    return [(aid, "developer", None) for aid in sorted(found)]
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +220,7 @@ def developer_crawl(fetcher: Fetcher, developers: list[dict]) -> list[tuple[str,
 # ---------------------------------------------------------------------------
 
 
-def chart_scrape(fetcher: Fetcher, categories: list[str] | None = None) -> list[tuple[str, str]]:
+def chart_scrape(fetcher: Fetcher, categories: list[str] | None = None) -> list[tuple[str, str, None]]:
     """Scrape the global top page plus category pages.
 
     A late signal by construction — an app that charts has usually already broken out — but
@@ -210,14 +229,26 @@ def chart_scrape(fetcher: Fetcher, categories: list[str] | None = None) -> list[
     """
     categories = categories if categories is not None else CATEGORIES
     found: set[str] = set()
+    empty: list[str] = []
 
-    top_ids = _ids_from_html(fetcher.get(TOP_URL, expect=_has_app_links))
+    top_ids = _ids_from_html(fetcher.get(TOP_URL, expect=_has_app_links, retries=1))
     found.update(top_ids)
     print(f"  top charts: {len(top_ids)} apps")
 
     for cat in categories:
-        ids = _ids_from_html(fetcher.get(CATEGORY_URL.format(cat=cat), expect=_has_app_links))
-        found.update(ids)
+        # retries=1: some category pages are *reliably* empty rather than throttled —
+        # MEDICAL serves a 1 MB page with zero app links while its neighbours are fine
+        # (verified 2026-08-17). Retrying those twice just burns requests.
+        ids = _ids_from_html(
+            fetcher.get(CATEGORY_URL.format(cat=cat), expect=_has_app_links, retries=1)
+        )
+        if ids:
+            found.update(ids)
+        else:
+            empty.append(cat)
         print(f"  category {cat}: {len(ids)} apps")
 
-    return [(aid, "chart") for aid in sorted(found)]
+    if empty:
+        print(f"  ! {len(empty)}/{len(categories)} categories returned no app links: {empty}")
+
+    return [(aid, "chart", None) for aid in sorted(found)]

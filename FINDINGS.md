@@ -138,20 +138,48 @@ discovery. Every channel measured:
 | `NEW_FREE` / `NEW_PAID` collections | **dead** — 200 with zero app links | none |
 | Sitemaps | **useless** — no dates, mixed types (§2.2) | none |
 | Cross-store from iOS | **17%** match rate (§2.3) | poor |
-| Keyword search (D1) | works once wrapped, but ranks by relevance × popularity | **0 of 24 sampled apps were <90 days old** |
-| Install-band pre-filter on search | **dead idea** — low-band 0% vs high-band 0% young across 24 stratified samples | no better than random |
+| Keyword search (D1) | **the young-app channel** — see the correction below | 53% of finds under 120 days; youngest 1 day |
+| Install-band pre-filter on search | **works** at the right threshold; under 100 installs → 93% young | the cheapest youth signal available pre-enrichment |
 | Developer pages (D2) | **works, via both URL forms** (§2.4) | high precision, but only for developers already in the DB |
-| Category charts (D4) | works — `/store/apps/top` ~95 ids, category pages 43–62 | late by construction — charting *is* the breakout |
+| Category charts (D4) | works — `/store/apps/top` ~95 ids, category pages 43–62 | **median find is 2,079 days old** — useless for youth |
 
-**D1's real job is not finding young apps.** The full Actions run settled this: 248 distinct
-apps from 10 keywords, and *zero* of 24 stratified samples were under 90 days old. Install-band
-pre-filtering, the one idea that might have rescued it, performed exactly as well as random.
+### Correction: search is Play's young-app channel, and charts are not
 
-So search should be understood as a **seed generator for D2**, not as a discovery channel in
-its own right. Every app it surfaces contributes a developer, and developers are where new apps
-actually appear — a real example from testing: crawling "Notion Labs, Inc." surfaces
-`com.cron.calendar`, an acquisition no keyword would ever connect to Notion. Judge D1 on
-developers-per-request, not apps-per-request.
+An earlier version of this section concluded from Phase 0 that keyword search found no young
+apps and should be treated only as a seed generator for D2. **That was wrong**, and the first
+live pipeline run disproved it with a much larger sample:
+
+| Channel | Enriched | Under 120 days | Median age | Youngest |
+|---|---|---|---|---|
+| search | 80 | **42 (53%)** | 115 d | **1 day** |
+| chart | 147 | 1 (1%) | 2,079 d | 104 days |
+
+Install band predicts age sharply (search-discovered, n=80):
+
+| Install band | Apps | % under 120d | Median age |
+|---|---|---|---|
+| <100 | 27 | **93%** | 19 d |
+| 100–1k | 28 | 43% | 152 d |
+| 1k–10k | 25 | 20% | 284 d |
+
+**Why Phase 0 got it backwards:** T6 stratified the pool at 100,000 installs. Nearly every app
+on the store falls below that, so both "strata" were the same population and the comparison was
+meaningless — it reported 0% vs 0% and I read that as "no signal" rather than "no contrast".
+The signal is real and lives three orders of magnitude lower.
+
+**The general lesson**, which is the same one as §4: a threshold chosen by intuition can
+silently destroy the thing you are trying to measure. Phase 0's job was to de-risk the build,
+and on this question it produced a confident wrong answer that survived until real data
+contradicted it. Spike results deserve less trust than pipeline results.
+
+Charts keep their place, but for a different reason than assumed: their median find is five and
+a half years old, so they are a **developer-seed source for D2**, not a discovery channel. That
+is the role search was wrongly assigned.
+
+Acted on: `app.discovery_installs` now records the band at discovery time (sql/003), and the
+enrich queue processes smallest-band-first. This matters because discovery outruns enrichment
+several times over — the first run found 2,084 apps against a 400/day enrich budget — so queue
+order, not channel yield, decides whether the system surfaces new apps or re-measures old ones.
 
 **Honest architectural consequence:** the two store pipelines are not symmetric, and the spec
 should stop implying they are.

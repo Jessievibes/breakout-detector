@@ -24,10 +24,10 @@ from ..lib.http import AppNotFound, Blocked, play_fetcher
 from ..stores.play import detail as play_detail
 
 
-def enrich_play(conn, rl: log.RunLog, *, day: date, limit: int) -> dict:
+def enrich_play(conn, rl: log.RunLog, *, day: date, limit: int, via: str | None = None) -> dict:
     fetcher = play_fetcher()
-    queue = db.enrich_queue(conn, "play", limit)
-    print(f"queue: {len(queue)} play apps for {day.isoformat()}")
+    queue = db.enrich_queue(conn, "play", limit, via=via)
+    print(f"queue: {len(queue)} play apps for {day.isoformat()}" + (f" (via={via})" if via else ""))
 
     tracker = NullRateTracker("play detail")
     counts = {"ok": 0, "delisted": 0, "parser_fail": 0, "suspect": 0, "error": 0}
@@ -120,13 +120,18 @@ def main() -> int:
         "when replaying a late or missed run so the snapshot lands on the right day.",
     )
     ap.add_argument("--limit", type=int, default=400, help="apps to enrich this run")
+    ap.add_argument(
+        "--via",
+        help="restrict to one discovery channel (chart|search|developer). Diagnostic: "
+        "use it to measure a channel's discovery latency before trusting its budget.",
+    )
     args = ap.parse_args()
     day = parse_day(args.day)
 
     with log.run("enrich") as rl:
         try:
             with db.connect() as conn:
-                enrich_play(conn, rl, day=day, limit=args.limit)
+                enrich_play(conn, rl, day=day, limit=args.limit, via=args.via)
         except Blocked as e:
             print(f"\nBLOCKED: {e}")
             raise

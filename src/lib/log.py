@@ -16,7 +16,6 @@ import traceback
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-import psycopg
 
 from . import db
 
@@ -30,7 +29,7 @@ class RunLog:
 
     def _open(self) -> None:
         try:
-            self._conn = psycopg.connect(db.dsn(), autocommit=True)
+            self._conn = db.raw_connect(autocommit=True, row_factory=None)
         except Exception as e:
             # Never let logging failure mask the actual job. Degrade to stdout.
             print(f"! run_log unavailable ({type(e).__name__}); continuing without it")

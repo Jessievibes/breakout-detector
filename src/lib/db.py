@@ -33,6 +33,24 @@ def dsn() -> str:
     return url
 
 
+def raw_connect(*, autocommit: bool = False, row_factory=dict_row):
+    """Single place that opens a Postgres connection.
+
+    `prepare_threshold=None` disables psycopg's automatic prepared statements. This is not
+    an optimization — it is required against Supabase's transaction pooler (port 6543),
+    which multiplexes connections and cannot keep a prepared statement alive between
+    statements. Leaving it on produces "prepared statement _pg3_N already exists" errors
+    that appear only after a job has run a query several times, which is a miserable thing
+    to debug. Harmless on a session-mode or direct connection, so it is set unconditionally.
+    """
+    return psycopg.connect(
+        dsn(),
+        row_factory=row_factory,
+        autocommit=autocommit,
+        prepare_threshold=None,
+    )
+
+
 @contextmanager
 def connect():
     """One transaction per job step. Commits on clean exit, rolls back on exception.
@@ -40,7 +58,7 @@ def connect():
     Rolling back matters: a discovery run that dies halfway should not leave half its apps
     inserted with no snapshot, because the enrich queue would then treat them as done.
     """
-    with psycopg.connect(dsn(), row_factory=dict_row, autocommit=False) as conn:
+    with raw_connect(autocommit=False) as conn:
         try:
             yield conn
             conn.commit()
@@ -78,12 +96,15 @@ def upsert_app(conn, *, store: str, store_app_id: str, discovered_via: str, **fi
         return cur.fetchone()["id"]
 
 
-def insert_apps_bulk(conn, store: str, rows: list[tuple[str, str]]) -> int:
-    """Bulk-register discovered app ids as (store_app_id, discovered_via).
+def insert_apps_bulk(conn, store: str, rows: list[tuple[str, str, int | None]]) -> int:
+    """Bulk-register discovered apps as (store_app_id, discovered_via, discovery_installs).
 
-    Discovery only needs to know an app *exists*; enrichment fills in the rest. Keeping
-    this insert minimal is what lets a discovery job register 500 apps in one statement
-    and still be idempotent.
+    Discovery only needs to know an app *exists*; enrichment fills in the rest. Keeping this
+    insert minimal is what lets a discovery job register 500 apps in one statement and still
+    be idempotent.
+
+    `discovery_installs` is carried because it is the only youth signal available before
+    enrichment, and it decides the enrich queue's order — see sql/003.
 
     Returns the count of genuinely new apps — the number that matters for channel yield.
     """
@@ -92,11 +113,12 @@ def insert_apps_bulk(conn, store: str, rows: list[tuple[str, str]]) -> int:
     with conn.cursor() as cur:
         cur.executemany(
             """
-            insert into app (store, store_app_id, discovered_via)
-            values (%s, %s, %s)
-            on conflict (store, store_app_id) do nothing
+            insert into app (store, store_app_id, discovered_via, discovery_installs)
+            values (%s, %s, %s, %s)
+            on conflict (store, store_app_id) do update
+               set discovery_installs = coalesce(app.discovery_installs, excluded.discovery_installs)
             """,
-            [(store, aid, via) for aid, via in rows],
+            [(store, aid, via, band) for aid, via, band in rows],
         )
         return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
@@ -163,24 +185,40 @@ def set_flags(conn, app_id: int, **flags) -> None:
 # ---------------------------------------------------------------------------
 
 
-def enrich_queue(conn, store: str, limit: int) -> list[dict]:
+def enrich_queue(conn, store: str, limit: int, via: str | None = None) -> list[dict]:
     """Apps due for enrichment, never-enriched first, then stalest.
 
     Ordering by `last_enriched nulls first` means newly discovered apps get their first
     snapshot before established apps get their next one — the young apps are the entire
     point of the system.
+
+    `via` restricts to one discovery channel. That is a diagnostic, not a normal mode: it
+    is how you measure a channel's discovery latency (median `first_seen − released`) and
+    so decide whether it earns its request budget.
     """
+    sql = """
+        select id, store_app_id, name, released, discovered_via
+          from app
+         where store = %s and delisted = false
+    """
+    params: list = [store]
+    if via:
+        sql += " and discovered_via = %s"
+        params.append(via)
+    # Never-enriched first, and among those, smallest discovery band first — apps under 100
+    # installs are ~93% likely to be under 120 days old, and finding those is the whole point.
+    # Discovery outruns the enrich budget several times over, so this ordering is what decides
+    # whether the system surfaces new apps or merely re-measures established ones.
+    sql += """
+        order by last_enriched nulls first,
+                 discovery_installs nulls last,
+                 id
+        limit %s
+    """
+    params.append(limit)
+
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            select id, store_app_id, name, released
-              from app
-             where store = %s and delisted = false
-             order by last_enriched nulls first, id
-             limit %s
-            """,
-            [store, limit],
-        )
+        cur.execute(sql, params)
         return cur.fetchall()
 
 

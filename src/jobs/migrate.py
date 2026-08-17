@@ -10,8 +10,6 @@ import glob
 import os
 import sys
 
-import psycopg
-
 from ..lib import db
 
 SQL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "sql")
@@ -22,7 +20,7 @@ def main() -> int:
     if not files:
         sys.exit(f"no .sql files found in {os.path.abspath(SQL_DIR)}")
 
-    with psycopg.connect(db.dsn(), autocommit=True) as conn:
+    with db.raw_connect(autocommit=True, row_factory=None) as conn:
         for path in files:
             name = os.path.basename(path)
             with open(path) as f:

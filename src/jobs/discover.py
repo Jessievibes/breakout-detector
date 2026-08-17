@@ -25,9 +25,12 @@ def run_play(conn, rl: log.RunLog, *, channels: set[str], dev_seeds: int) -> dic
     per_channel: dict[str, dict] = {}
     total_new = 0
 
-    def register(pairs: list[tuple[str, str]], channel: str) -> None:
+    def register(pairs: list[tuple[str, str, int | None]], channel: str) -> None:
         nonlocal total_new
         new = db.insert_apps_bulk(conn, "play", pairs)
+        # Commit per channel. If a later channel trips the IP guard, the work already done
+        # survives instead of rolling back — the first live run lost ~1000 chart ids that way.
+        conn.commit()
         per_channel[channel] = {"found": len(pairs), "new": new}
         total_new += new
         print(f"  → {channel}: {len(pairs)} ids, {new} new")

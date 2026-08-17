@@ -173,12 +173,16 @@ class TestDeveloperUrls(unittest.TestCase):
 
 
 class TestFetchStats(unittest.TestCase):
-    def test_anomaly_rate_counts_empty_200s(self):
+    def test_anomaly_rate_is_per_call_not_per_attempt(self):
+        """Retries must not inflate the health signal. One URL failing three times is one
+        failed call — the first live run aborted at a bogus 10.7% because a single empty
+        category page counted as three anomalies."""
         s = FetchStats()
-        s.requests = 100
-        s.empty_200 = 8
-        s.http_403 = 4
-        self.assertAlmostEqual(s.anomaly_rate, 0.12)
+        s.requests = 30  # attempts, retries included
+        s.calls = 10
+        s.failed_calls = 1
+        s.empty_200 = 3
+        self.assertAlmostEqual(s.anomaly_rate, 0.10)
 
     def test_no_requests_no_division_error(self):
         self.assertEqual(FetchStats().anomaly_rate, 0.0)
@@ -188,6 +192,55 @@ class TestFetchStats(unittest.TestCase):
         s.requests = 1
         s.codes[200] += 1
         self.assertEqual(s.as_dict()["codes"], {"200": 1})
+
+
+class TestDegradationGuard(unittest.TestCase):
+    """The guard must fire on a burning IP and stay quiet on one awkward URL."""
+
+    def _fetcher(self):
+        from src.lib.http import Fetcher
+
+        return Fetcher(delay=(0, 0))
+
+    def test_one_bad_url_does_not_trip_it(self):
+        f = self._fetcher()
+        for _ in range(40):
+            f._record_call(True)
+        f._record_call(False)  # a single empty page, e.g. Play's MEDICAL category
+        self.assertEqual(f.stats.failed_calls, 1)
+
+    def test_sustained_failure_rate_trips_it(self):
+        from src.lib.http import Blocked
+
+        f = self._fetcher()
+        with self.assertRaises(Blocked):
+            for i in range(60):
+                f._record_call(i % 4 != 0)  # 25% failing
+
+    def test_consecutive_failures_trip_it_early(self):
+        """A burning IP shows as many different URLs failing in a row, before the rate
+        over the whole run has had time to climb."""
+        from src.lib.http import Blocked
+
+        f = self._fetcher()
+        for _ in range(200):
+            f._record_call(True)
+        with self.assertRaises(Blocked):
+            for _ in range(8):
+                f._record_call(False)
+
+    def test_success_resets_the_consecutive_counter(self):
+        f = self._fetcher()
+        for _ in range(7):
+            f._record_call(False)
+        f._record_call(True)
+        self.assertEqual(f._consecutive_failures, 0)
+
+    def test_small_samples_do_not_trip_the_rate_check(self):
+        f = self._fetcher()
+        for _ in range(5):
+            f._record_call(False)  # 100% failing, but only 5 calls
+        self.assertEqual(f.stats.calls, 5)
 
 
 class TestDbColumnAllowlist(unittest.TestCase):
