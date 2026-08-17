@@ -184,16 +184,20 @@ def enrich_queue(conn, store: str, limit: int) -> list[dict]:
         return cur.fetchall()
 
 
-def developer_crawl_seeds(conn, limit: int) -> list[str]:
-    """Distinct Play developer names for channel D2.
+def developer_crawl_seeds(conn, limit: int) -> list[dict]:
+    """Distinct Play developers for channel D2, as {developer, developer_id}.
 
-    Names, not numeric ids: `developer?id=<NAME>` is the working URL form; `dev?id=` is
-    404 (verified 2026-08-17).
+    Both fields are needed, not just the name: Play serves numeric-id developers from
+    `dev?id=<numeric>` and name-id developers from `developer?id=<NAME>`, and the wrong
+    form returns a clean 404 rather than an error (verified 2026-08-17). Roughly half of
+    sampled apps use each form, so passing names alone silently loses half of D2.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
-            select developer, count(*) as n
+            select developer,
+                   min(developer_id) as developer_id,
+                   count(*) as n
               from app
              where store = 'play' and developer is not null and delisted = false
              group by developer
@@ -202,7 +206,10 @@ def developer_crawl_seeds(conn, limit: int) -> list[str]:
             """,
             [limit],
         )
-        return [r["developer"] for r in cur.fetchall()]
+        return [
+            {"developer": r["developer"], "developer_id": r["developer_id"]}
+            for r in cur.fetchall()
+        ]
 
 
 def last_snapshot_metric(conn, app_id: int, column: str) -> int | None:

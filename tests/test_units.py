@@ -129,6 +129,49 @@ class TestParsers(unittest.TestCase):
         self.assertIsNone(install_band("Varies"))
 
 
+class TestDeveloperUrls(unittest.TestCase):
+    """Play serves numeric-id developers from dev?id= and name-id developers from
+    developer?id=. The wrong form returns a clean 404, so getting this wrong loses half of
+    channel D2 without raising anything."""
+
+    def test_numeric_id_prefers_dev_form(self):
+        from src.stores.play.discover import developer_urls
+
+        urls = developer_urls("Todoist Inc.", "4949773854634494965")
+        self.assertIn("/dev?id=4949773854634494965", urls[0])
+
+    def test_name_id_prefers_developer_form(self):
+        from src.stores.play.discover import developer_urls
+
+        urls = developer_urls("Spotify AB", "Spotify+AB")
+        self.assertIn("/developer?id=Spotify+AB", urls[0])
+
+    def test_name_case_does_not_double_encode_plus(self):
+        """developerId comes back pre-encoded ('Spotify+AB'); re-encoding makes '%2B' and 404s.
+        The raw `developer` name must be what gets quoted."""
+        from src.stores.play.discover import developer_urls
+
+        for url in developer_urls("Spotify AB", "Spotify+AB"):
+            self.assertNotIn("%2B", url)
+
+    def test_comma_in_name_is_encoded_not_dropped(self):
+        from src.stores.play.discover import developer_urls
+
+        urls = developer_urls("Notion Labs, Inc.", "Notion+Labs,+Inc.")
+        self.assertIn("Notion+Labs%2C+Inc.", urls[0])
+
+    def test_fallback_form_is_offered(self):
+        """A 404 is indistinguishable from 'no apps', so the other form must be tried."""
+        from src.stores.play.discover import developer_urls
+
+        self.assertEqual(len(developer_urls("Todoist Inc.", "4949773854634494965")), 2)
+
+    def test_no_identifiers_yields_nothing(self):
+        from src.stores.play.discover import developer_urls
+
+        self.assertEqual(developer_urls(None, None), [])
+
+
 class TestFetchStats(unittest.TestCase):
     def test_anomaly_rate_counts_empty_200s(self):
         s = FetchStats()

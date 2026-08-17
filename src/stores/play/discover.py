@@ -28,7 +28,22 @@ from ...lib.http import Fetcher, ThinResult
 
 APP_ID_RE = re.compile(r"/store/apps/details\?id=([a-zA-Z0-9._]+)")
 
-DEV_URL = "https://play.google.com/store/apps/developer?id={dev}&hl=en&gl=us"
+# Play uses TWO developer URL forms and they are NOT interchangeable. Verified 2026-08-17
+# by reading the links Play's own detail pages emit:
+#
+#     developerId numeric ('4949773854634494965')  ->  dev?id=<numeric>        200
+#                                                      developer?id=<numeric>  404
+#     developerId is a name ('Spotify AB')         ->  developer?id=<name>     200
+#                                                      dev?id=<name>           404
+#
+# Roughly half of sampled apps use each form, so picking one and hoping loses half of D2 —
+# silently, because the wrong form returns a clean 404 rather than an error.
+#
+# Note: use the raw `developer` NAME with quote_plus, never the `developerId` string for the
+# name case — the library returns that pre-encoded ('Spotify+AB'), and re-encoding turns the
+# '+' into '%2B' and 404s.
+DEV_NAME_URL = "https://play.google.com/store/apps/developer?id={dev}&hl=en&gl=us"
+DEV_NUMERIC_URL = "https://play.google.com/store/apps/dev?id={dev}&hl=en&gl=us"
 TOP_URL = "https://play.google.com/store/apps/top?hl=en&gl=us"
 CATEGORY_URL = "https://play.google.com/store/apps/category/{cat}?hl=en&gl=us"
 
@@ -126,19 +141,58 @@ def search_sweep(fetcher: Fetcher, terms: list[str] | None = None) -> list[tuple
 # ---------------------------------------------------------------------------
 
 
-def developer_crawl(fetcher: Fetcher, developers: list[str]) -> list[tuple[str, str]]:
+def developer_urls(name: str | None, developer_id: str | None) -> list[str]:
+    """Ordered candidate URLs for one developer — best guess first, other form as fallback.
+
+    Returning both rather than trusting the rule outright: a 404 here is indistinguishable
+    from "this developer has no apps", so the fallback is what stops a silent zero.
+    """
+    did = (developer_id or "").strip()
+    urls: list[str] = []
+    if did.isdigit():
+        urls.append(DEV_NUMERIC_URL.format(dev=urllib.parse.quote_plus(did)))
+        if name:
+            urls.append(DEV_NAME_URL.format(dev=urllib.parse.quote_plus(name)))
+    else:
+        if name:
+            urls.append(DEV_NAME_URL.format(dev=urllib.parse.quote_plus(name)))
+        if did and did != (name or "").replace(" ", "+"):
+            urls.append(DEV_NAME_URL.format(dev=did))
+    return urls
+
+
+def developer_crawl(fetcher: Fetcher, developers: list[dict]) -> list[tuple[str, str]]:
     """Crawl developer pages for sibling apps.
 
     Highest-precision Play channel: a developer already in the database shipping something
-    new is exactly what we want to catch. Limited by definition to developers we know, so
-    it compounds rather than bootstraps.
+    new is exactly what we want to catch. Limited by definition to developers we know, so it
+    compounds rather than bootstraps.
+
+    `developers` is a list of {"developer": name, "developer_id": id}. Empty results are
+    counted and reported, because a developer page yielding nothing usually means a stale
+    name or the wrong URL form — not a developer who shipped nothing.
     """
     found: set[str] = set()
+    empty: list[str] = []
+
     for dev in developers:
-        url = DEV_URL.format(dev=urllib.parse.quote_plus(dev))
-        ids = _ids_from_html(fetcher.get(url, expect=_has_app_links))
-        found.update(ids)
-        print(f"  developer {dev!r}: {len(ids)} apps")
+        name, did = dev.get("developer"), dev.get("developer_id")
+        ids: list[str] = []
+        for url in developer_urls(name, did):
+            ids = _ids_from_html(fetcher.get(url, expect=_has_app_links))
+            if ids:
+                break
+        if ids:
+            found.update(ids)
+        else:
+            empty.append(name or str(did))
+        print(f"  developer {name!r}: {len(ids)} apps")
+
+    if empty:
+        # Not fatal — developers do get renamed and delisted — but a high rate means the
+        # URL rule has drifted again, so make it visible rather than silently thin.
+        print(f"  ! {len(empty)}/{len(developers)} developer pages yielded nothing: {empty[:5]}")
+
     return [(aid, "developer") for aid in sorted(found)]
 
 

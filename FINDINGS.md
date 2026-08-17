@@ -3,8 +3,35 @@
 Everything below was measured live, not inferred from documentation. Dates matter: store
 internals change without notice, and a claim without a date is a claim without a shelf life.
 
-Runs: residential IP, 2026-08-12 (initial probes) and 2026-08-17 (full spike, all gates pass).
-**Still unmeasured: the GitHub Actions runner IP.** That is the whole remaining point of Phase 0.
+Runs: residential IP 2026-08-12 and 2026-08-17; **GitHub Actions runner 2026-08-17** (run
+32043548775, 12.4 min, all gates pass).
+
+---
+
+## 0. The Actions IP verdict — PASS
+
+Phase 0 existed to answer one question: does a GitHub Actions runner IP survive both stores?
+
+**It does.** 193 requests from the runner: zero 403s, zero 429s, zero 5xx, zero
+empty-but-200 responses. Anomaly rate 0.0%, identical to the residential baseline. The
+sustained-volume test (100 sequential Play detail fetches at 2–5 s jitter) returned 100 good
+rows with a 0% parser-null rate.
+
+Consequences:
+
+- The deployment model in SPEC.md §2 stands. No self-hosted runner needed.
+- Free public-repo minutes mean job duration genuinely doesn't matter.
+- **This is a starting position, not a permanent one.** IP reputation degrades gradually
+  rather than failing cleanly, which is exactly why `run_log` records `empty_200` / `http_403`
+  per run and the fetcher aborts at a 10% anomaly rate. Phase 0 says where we start; that
+  instrumentation says when it rots.
+
+Two results sharpened by the full (non-quick) run:
+
+| | Quick run | Full Actions run |
+|---|---|---|
+| Young-app review truncation (T4) | 25% of 4 | **10% of 10** — iOS backfill is effectively complete |
+| Search sweep (T6) | 74 apps / 3 terms | **248 apps / 10 terms**, cap 30/term |
 
 ---
 
@@ -69,13 +96,35 @@ Two consequences:
    toward better-resourced developers. Still worth measuring — but as a study on a biased subsample,
    not a general constant.
 
-### 2.4 `dev?id=` is 404; `developer?id=<name>` works
+### 2.4 Play serves developers from TWO URL forms, and picking one loses half of D2
 
-The legacy developer URL is gone. The working form takes the developer **name**, not the numeric
-id: `https://play.google.com/store/apps/developer?id=Spotify+AB`. No library support — a thin
-regex over `/store/apps/details?id=([a-zA-Z0-9._]+)` is enough. Verified on 5 developers.
+Corrects an earlier, too-broad claim in this file that "`dev?id=` is 404". It is 404 *for
+names*. It is the **correct and only** form for numeric developer ids. Verified by reading the
+links Play's own detail pages emit:
 
-Schema consequence: `app.developer` (the name) is the D2 crawl key, not `developer_id`.
+| `developerId` | Working URL | Other form |
+|---|---|---|
+| numeric (`4949773854634494965`) | `dev?id=<numeric>` → 200 | `developer?id=<numeric>` → 404 |
+| a name (`Spotify AB`) | `developer?id=<name>` → 200 | `dev?id=<name>` → 404 |
+
+In an 8-app sample the split was 5 numeric / 3 name, so **using names alone silently loses
+roughly half of channel D2** — silently because the wrong form returns a clean 404, which is
+indistinguishable from "this developer has no apps".
+
+Two traps inside the trap:
+
+1. **Do not re-encode `developerId` for the name case.** The library returns it pre-encoded
+   (`Spotify+AB`); running `quote_plus` over that yields `%2B` and 404s. Quote the raw
+   `developer` name instead. Commas are fine either way (`Notion+Labs%2C+Inc.` → 200).
+2. **A developer page returning nothing is usually a stale name, not an empty developer.**
+   `developer_crawl` now tries both forms and reports the empty ones rather than shrugging.
+
+Schema consequence: D2 needs **both** `app.developer` and `app.developer_id`, not just the name.
+
+How this was found is worth recording: the first Actions run reported T7 at 3/5, which looked
+like an IP or parser problem. It was neither — two fixtures were simply stale (Niantic had sold
+Pokémon GO to Scopely Explore, Inc.; Todoist's developer is "Todoist Inc.", not "Doist").
+Chasing a wrong-looking test result surfaced a real bug that the passing 3 had been hiding.
 
 ---
 
@@ -89,10 +138,20 @@ discovery. Every channel measured:
 | `NEW_FREE` / `NEW_PAID` collections | **dead** — 200 with zero app links | none |
 | Sitemaps | **useless** — no dates, mixed types (§2.2) | none |
 | Cross-store from iOS | **17%** match rate (§2.3) | poor |
-| Keyword search (D1) | works once wrapped, but ranks by relevance × popularity | **0 of 8 sampled apps were <90 days old** |
-| Install-band pre-filter on search | free field, but low-band 0% vs high-band 0% young in the quick run | inconclusive — needs the full run's 12/stratum |
-| Developer pages (D2) | **works** (§2.4) | high precision, but only for developers already in the DB |
-| Category charts (D4) | works | late by construction — charting *is* the breakout |
+| Keyword search (D1) | works once wrapped, but ranks by relevance × popularity | **0 of 24 sampled apps were <90 days old** |
+| Install-band pre-filter on search | **dead idea** — low-band 0% vs high-band 0% young across 24 stratified samples | no better than random |
+| Developer pages (D2) | **works, via both URL forms** (§2.4) | high precision, but only for developers already in the DB |
+| Category charts (D4) | works — `/store/apps/top` ~95 ids, category pages 43–62 | late by construction — charting *is* the breakout |
+
+**D1's real job is not finding young apps.** The full Actions run settled this: 248 distinct
+apps from 10 keywords, and *zero* of 24 stratified samples were under 90 days old. Install-band
+pre-filtering, the one idea that might have rescued it, performed exactly as well as random.
+
+So search should be understood as a **seed generator for D2**, not as a discovery channel in
+its own right. Every app it surfaces contributes a developer, and developers are where new apps
+actually appear — a real example from testing: crawling "Notion Labs, Inc." surfaces
+`com.cron.calendar`, an acquisition no keyword would ever connect to Notion. Judge D1 on
+developers-per-request, not apps-per-request.
 
 **Honest architectural consequence:** the two store pipelines are not symmetric, and the spec
 should stop implying they are.
@@ -129,10 +188,16 @@ Generalize the lesson: any measurement that picks extremes measures extremes. St
 
 ---
 
-## 5. What Phase 0 still has to answer
+## 5. Phase 0 questions — all answered
 
-1. **Does the Actions runner IP survive both stores, and at what rate?** Everything above is
-   residential. Run `.github/workflows/validate.yml` and diff against the baseline table in
-   `VALIDATION.md`. If T1/T2 fail there while passing here, it is the IP, not the code.
-2. Does the install-band pre-filter concentrate young apps? Needs the full run (12/stratum).
-3. Truncation rate on a larger stratified young-app sample.
+1. ~~Does the Actions runner IP survive both stores?~~ **Yes** — 193 requests, 0% anomalous (§0).
+2. ~~Does the install-band pre-filter concentrate young apps?~~ **No** — no better than random (§3).
+3. ~~Truncation rate on a stratified young-app sample?~~ **10%** — iOS backfill effectively complete.
+
+Phase 0 is closed. What it leaves open is not a question but a standing risk: IP reputation
+decays, so `run_log`'s anomaly counters are the live continuation of this work.
+
+The open question that now matters most is a Phase 1 one: **does Play discovery find apps early
+enough to be worth its request budget?** Track `median(first_seen − released)` per channel from
+the first real run. If D1 and D4 only ever surface apps that are already months old and D2 is
+the only channel with real lead time, the request budget should shift accordingly.

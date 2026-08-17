@@ -721,47 +721,62 @@ def test_play_batchexecute(quick: bool) -> dict:
 # test 7 — developer-page discovery (channel D2)
 # ---------------------------------------------------------------------------
 
-PLAY_DEV_URL = "https://play.google.com/store/apps/developer?id={dev}&hl=en&gl=us"
+PLAY_DEV_NAME_URL = "https://play.google.com/store/apps/developer?id={dev}&hl=en&gl=us"
+PLAY_DEV_NUMERIC_URL = "https://play.google.com/store/apps/dev?id={dev}&hl=en&gl=us"
+
+# (developer name, developerId) pairs covering BOTH URL forms. The first Actions run of this
+# test failed 3/5 on stale fixtures — "Niantic, Inc." had sold Pokémon GO to Scopely, and
+# Todoist's developer is "Todoist Inc." not "Doist" — so every entry here is now taken from
+# a live detail page rather than from memory.
+PLAY_DEVS = [
+    ("Spotify AB", "Spotify+AB"),                    # name form
+    ("Bandcamp", "Bandcamp"),                        # name form
+    ("Notion Labs, Inc.", "Notion+Labs,+Inc."),      # name form, with a comma
+    ("Todoist Inc.", "4949773854634494965"),         # numeric form
+    ("Duolingo", "6957685454452609502"),             # numeric form
+    ("Anthropic PBC", "5320158043050023601"),        # numeric form
+]
 
 
 def test_developer_pages(quick: bool) -> dict:
-    """Validate channel D2, now Play's highest-precision discovery path.
+    """Validate channel D2, Play's highest-precision discovery path.
 
-    Verified 2026-08-17: the legacy `dev?id=` form is HTTP 404, `developer?id=<name>` is
-    200 and yields app links. The Python library exposes no developer() function, so this
-    needs the thin regex parser below — which is exactly why it must be validated from the
-    runner IP, not assumed.
+    Play serves two developer URL forms and they are not interchangeable (verified against
+    the links Play's own detail pages emit): numeric developerIds live at `dev?id=`, name
+    developerIds at `developer?id=`. The wrong form returns a clean 404, so choosing one and
+    hoping loses half of D2 silently. This test exercises both.
     """
-    print("\n[T7] Play developer pages — channel D2 parseability")
-    devs = ["Spotify AB", "Duolingo"] if quick else [
-        "Spotify AB",
-        "Duolingo",
-        "Google LLC",
-        "Niantic, Inc.",
-        "Doist",
-    ]
+    print("\n[T7] Play developer pages — channel D2, both URL forms")
+    devs = PLAY_DEVS[:2] + PLAY_DEVS[3:4] if quick else PLAY_DEVS
     rows, worked = [], 0
 
-    for dev in devs:
-        url = PLAY_DEV_URL.format(dev=urllib.parse.quote_plus(dev))
-        text = fetch(
-            url, PLAY_DELAY, expect=lambda t: "/store/apps/details?id=" in t
+    for name, did in devs:
+        numeric = did.isdigit()
+        url = (
+            PLAY_DEV_NUMERIC_URL.format(dev=urllib.parse.quote_plus(did))
+            if numeric
+            else PLAY_DEV_NAME_URL.format(dev=urllib.parse.quote_plus(name))
         )
-        ids = sorted(set(re.findall(r"/store/apps/details\?id=([a-zA-Z0-9._]+)", text))) if text else []
+        text = fetch(url, PLAY_DELAY, expect=lambda t: "/store/apps/details?id=" in t)
+        ids = (
+            sorted(set(re.findall(r"/store/apps/details\?id=([a-zA-Z0-9._]+)", text)))
+            if text
+            else []
+        )
         if ids:
             worked += 1
-        rows.append((dev, len(ids), ids[:3]))
-        print(f"  {dev:18} {len(ids):>3} app ids  {ids[:3]}")
+        form = "dev?id=<numeric>" if numeric else "developer?id=<name>"
+        rows.append((name, form, len(ids), ids[:3]))
+        print(f"  {name:20} {form:22} {len(ids):>3} app ids  {ids[:3]}")
 
-    ok = worked == len(devs)
     return {
         "id": "T7",
         "name": "Developer-page discovery",
-        "ok": ok,
+        "ok": worked == len(devs),
         "gate": False,
         "detail": (
-            f"{worked}/{len(devs)} developer pages parsed via `developer?id=<name>` "
-            f"(legacy `dev?id=` is 404). Regex parser, no library support"
+            f"{worked}/{len(devs)} developer pages parsed across both URL forms "
+            f"(numeric → dev?id=, name → developer?id=; the wrong form 404s)"
         ),
         "rows": rows,
     }

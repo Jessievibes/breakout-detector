@@ -11,7 +11,7 @@ Daily GitHub Actions cron → Postgres (Supabase) → dashboard.
 
 | Phase | Ships | State |
 |---|---|---|
-| 0 | validation spike | **code green locally**; still needs one run from an Actions runner — the IP question is the whole point |
+| 0 | validation spike | **done** — Actions runner passes all gates, 193 requests at 0% anomalies ([FINDINGS.md §0](FINDINGS.md)) |
 | 1 | schema + Play pipeline | **code complete**, unrun against a live database (needs `DATABASE_URL`) |
 | 2 | iOS pipeline + review backfill | not started |
 | 3 | scoring + run_log | not started |
