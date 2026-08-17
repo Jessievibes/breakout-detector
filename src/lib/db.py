@@ -311,18 +311,32 @@ def upsert_ranks(conn, store: str, ranks: dict[str, int], day: date) -> int:
 
 
 def backfill_queue(conn, store: str, limit: int) -> list[dict]:
-    """Apps whose review history has never been pulled, oldest-discovered first.
+    """Apps whose review history has never been pulled, most-rated first.
 
-    Oldest-first matters: review history is finite and capped at 500, so an app discovered
-    days ago is closer to losing early history off the end of the feed than one found today.
+    Ordering by rating count, not discovery time, because the budget is requests and written
+    reviews run at roughly 5% of star ratings. The first live backfill spent 36 of 40 requests
+    on apps with no ratings at all and recovered 12 reviews; those apps have no history to
+    recover, while a well-rated young app can have hundreds.
+
+    Apps not yet enriched (no snapshot, so no rating count) sort last rather than being
+    excluded — they are unknown, not known-empty, and the next run will have their counts.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
-            select id, store_app_id, name, released
-              from app
-             where store = %s and reviews_backfilled = false and delisted = false
-             order by first_seen
+            select a.id, a.store_app_id, a.name, a.released, s.rating_count
+              from app a
+              left join lateral (
+                    select rating_count
+                      from snapshot
+                     where app_id = a.id and rating_count is not null
+                     order by day desc
+                     limit 1
+                   ) s on true
+             where a.store = %s
+               and a.reviews_backfilled = false
+               and a.delisted = false
+             order by s.rating_count desc nulls last, a.first_seen
              limit %s
             """,
             [store, limit],

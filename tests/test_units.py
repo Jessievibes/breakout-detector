@@ -362,6 +362,44 @@ class TestAppleFeedParsing(unittest.TestCase):
         self.assertEqual(_entries('{"feed":{}}'), [])
 
 
+class TestNewAppFeedIsNotSweptByGenre(unittest.TestCase):
+    """Apple's new-app feeds ignore ?genre= and return the same global 100 apps for every
+    value (verified live). Sweeping genres here costs 36x the requests for identical data —
+    so the call count itself is the thing worth locking down."""
+
+    class _CountingFetcher:
+        def __init__(self):
+            self.urls = []
+
+        def get(self, url, expect=None, retries=None):
+            self.urls.append(url)
+            return (
+                '{"feed":{"entry":[{"id":{"attributes":{"im:id":"1"}}},'
+                '{"id":{"attributes":{"im:id":"2"}}}]}}'
+            )
+
+    def test_one_request_per_feed(self):
+        from src.stores.ios.feeds import NEW_FEEDS, discover_new
+
+        f = self._CountingFetcher()
+        discover_new(f)
+        self.assertEqual(len(f.urls), len(NEW_FEEDS))
+
+    def test_uses_the_all_apps_genre(self):
+        from src.stores.ios.feeds import ALL_APPS_GENRE, discover_new
+
+        f = self._CountingFetcher()
+        discover_new(f, feeds=["newapplications"])
+        self.assertIn(f"genre={ALL_APPS_GENRE}", f.urls[0])
+
+    def test_dedupes_across_feeds(self):
+        from src.stores.ios.feeds import discover_new
+
+        f = self._CountingFetcher()
+        result = discover_new(f)
+        self.assertEqual(sorted(t for t, _, _ in result), ["1", "2"])
+
+
 class TestDbColumnAllowlist(unittest.TestCase):
     def test_refuses_unknown_column(self):
         """last_snapshot_metric interpolates a column name, so it must be allowlisted."""

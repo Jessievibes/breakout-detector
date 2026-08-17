@@ -216,6 +216,53 @@ Generalize the lesson: any measurement that picks extremes measures extremes. St
 
 ---
 
+## 4b. Correction: Apple's new-app feed is frozen; iOS charts are the day-zero channel
+
+This file previously called Apple's new-app feeds "true day-zero discovery" and the primary
+iOS channel. **Wrong again, and in the same shape as §3.** Measured from real release dates
+after the first iOS enrichment run (6,372 apps):
+
+| Channel | Apps | Under 120 days | Median age | Youngest |
+|---|---|---|---|---|
+| chart | 6,164 | 381 (6%) | 2,758 d | **0 days** |
+| newapps_feed | 208 | 208 (100%) | 41 d | **41 days** |
+
+`newapplications` is **stale**: 206 of its 208 apps were released on 2026-07-07, and the
+entire feed spans three days in early July — a snapshot roughly six weeks old. The 100%
+"under 120 days" figure is what makes it look like a working new-app feed at a glance, and
+why a summary statistic alone would not have caught this. The minimum age of 41 days is the
+tell.
+
+It also **lies about its freshness**: `feed.updated` is regenerated on every request
+(`2026-08-17T12:33:41`) while the contents stay fixed, so there is no cheap fetch-time
+staleness check. The only detector is release dates after enrichment.
+
+Meanwhile iOS **charts carry apps released the same day**, often at high rank — a 0-day-old
+game sat at #5 in Games. New iOS releases chart immediately, which makes charts behave
+completely differently across the two stores:
+
+| | Play charts | iOS charts |
+|---|---|---|
+| median age of finds | 2,005 d | 2,758 d |
+| youngest find | 104 d | **0 d** |
+| apps under 120 d | 1% | 6% (381 apps) |
+
+Both have an old median, but only iOS charts contain genuinely new releases. On Play,
+charting *is* the breakout; on iOS, charting is how a launch starts.
+
+**Two other feed facts, verified 2026-08-17:**
+
+- The new-app feeds **ignore `?genre=`** — every value returns the same global 100 apps
+  (checked across 6014, 6002, 6015, 6013, 36). The first implementation swept 36 genres and
+  fetched identical data 36 times, 108 requests for what 3 deliver.
+- The chart feeds **honour `?genre=`** — Games and Finance share 0 of 100 entries.
+
+**The recurring lesson**, now three for three: Phase 0 verified that endpoints *returned
+data*, never that the data meant what its name implied. A feed called "new applications"
+that returns 100 entries passes every check except the one that matters.
+
+---
+
 ## 5. Phase 0 questions — all answered
 
 1. ~~Does the Actions runner IP survive both stores?~~ **Yes** — 193 requests, 0% anomalous (§0).

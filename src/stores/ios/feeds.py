@@ -1,18 +1,34 @@
 """Apple RSS feeds — discovery and chart ranks.
 
-This is the half of the system Play cannot match. Apple still publishes new-app feeds, and
-all three variants work (verified 2026-08-17), so iOS apps are catchable on release day. Play
-has no equivalent surface left: `NEW_FREE` is dead, and its best channel finds apps at a
-median age of 115 days.
+**The chart feeds are the day-zero channel here, not the new-app feeds.** That is the
+opposite of what the name suggests, and it was only visible from real release dates:
 
-Two feed families, doing different jobs:
+    channel        apps   under 120d   median age   youngest
+    chart          6164    381 ( 6%)      2758d        0 days
+    newapps_feed    208    208 (100%)       41d       41 days
 
-  new*    — discovery. Apps that just shipped.
-  top*    — rank. An app's chart position is a scoring input (`rank_velocity`), and a late
-            discovery channel in its own right.
+`newapplications` is **frozen**. Of the 208 apps it returns, 206 were released on
+2026-07-07 and the whole feed spans three days in early July — a stale snapshot roughly six
+weeks old. Worse, it advertises a `feed.updated` timestamp regenerated on every request, so
+it looks live while serving fixed content. There is no cheap fetch-time staleness signal;
+the only detector is comparing release dates after enrichment, which is exactly the
+`median(first_seen − released)` KPI the spec already asks for.
 
-Both cap at 100 entries per genre regardless of the `limit` parameter — `limit=200` still
-returns 100.
+The chart feeds, by contrast, carry apps released *today*, often at high rank — new iOS
+releases chart immediately (a 0-day-old game sat at #5 in Games). That makes charts behave
+completely differently across the two stores: on Play, charts find apps with a median age of
+2,005 days, because charting there means an app already broke out.
+
+Two feed families, and they disagree about `genre`:
+
+  new*    — genre is IGNORED. Every value returns the same global 100 apps (verified across
+            6014, 6002, 6015, 6013 and 36). One request each; never sweep.
+  top*    — genre is HONOURED. Games and Finance share 0 of 100 entries. Sweep these.
+
+Both cap at 100 entries regardless of the `limit` parameter — `limit=200` returns 100.
+
+The new-app feeds are kept because they cost three requests total and may thaw, but they are
+demoted: charts are what actually finds new iOS apps today.
 """
 
 from __future__ import annotations
@@ -102,29 +118,39 @@ def fetch_feed(fetcher: Fetcher, feed: str, genre: int) -> list[dict]:
     return _entries(text)
 
 
-def discover_new(
-    fetcher: Fetcher,
-    genres: list[int] | None = None,
-    feeds: list[str] | None = None,
-) -> list[tuple[str, str, None]]:
-    """Sweep the new-app feeds. Returns (track_id, 'newapps_feed', None) triples.
+ALL_APPS_GENRE = 36  # Apple's "all apps" pseudo-genre
 
-    The third slot is the discovery install band, which Play's search results carry and Apple
-    has no equivalent for. Kept for a uniform interface with the Play channels; the enrich
-    queue sorts nulls last, so iOS apps are enriched after known-tiny Play apps. That is
-    acceptable because iOS enrichment is ~200x cheaper per app (see lookup.py).
+
+def discover_new(fetcher: Fetcher, feeds: list[str] | None = None) -> list[tuple[str, str, None]]:
+    """Fetch the new-app feeds. Returns (track_id, 'newapps_feed', None) triples.
+
+    **One request per feed, deliberately — the genre parameter is ignored here.** Verified
+    2026-08-17: `newapplications` returns a byte-identical set of the same 100 apps for
+    genre=6014, 6002, 6015, 6013 and 36. Sweeping 36 genres fetched the same 100 apps 36
+    times over, at a cost of 108 requests for what 3 requests deliver.
+
+    Note the asymmetry inside the same RSS family: chart feeds *do* honour genre (Games and
+    Finance share 0 of 100 entries), which is why `fetch_chart_ranks` still sweeps them.
+
+    The practical consequence is a much narrower firehose than the spec assumed. iOS day-zero
+    discovery is roughly 200 apps/day total — 100 from `newapplications`, plus about another
+    100 distinct paid apps from `newpaidapplications`; `newfreeapplications` overlaps the
+    first almost entirely. That is still the only genuine release-day channel in the system,
+    but it is a stream, not a flood.
+
+    The third tuple slot is the discovery install band, which Play's search results carry and
+    Apple has no equivalent for. Kept for a uniform interface; the enrich queue sorts nulls
+    last, which is fine because iOS enrichment is ~200x cheaper per app (see lookup.py).
     """
-    genres = genres if genres is not None else GENRES + GAME_GENRES
     feeds = feeds if feeds is not None else NEW_FEEDS
     found: set[str] = set()
 
     for feed in feeds:
         before = len(found)
-        for genre in genres:
-            for e in fetch_feed(fetcher, feed, genre):
-                tid = _track_id(e)
-                if tid:
-                    found.add(tid)
+        for e in fetch_feed(fetcher, feed, ALL_APPS_GENRE):
+            tid = _track_id(e)
+            if tid:
+                found.add(tid)
         print(f"  {feed}: pool now {len(found)} (+{len(found) - before})")
 
     return [(tid, "newapps_feed", None) for tid in sorted(found)]
