@@ -12,7 +12,7 @@ Daily GitHub Actions cron → Postgres (Supabase) → dashboard.
 | Phase | Ships | State |
 |---|---|---|
 | 0 | validation spike | **done** — Actions runner passes all gates, 193 requests at 0% anomalies ([FINDINGS.md §0](FINDINGS.md)) |
-| 1 | schema + Play pipeline | **code complete**, unrun against a live database (needs `DATABASE_URL`) |
+| 1 | schema + Play pipeline | **done** — running daily on Actions against Supabase |
 | 2 | iOS pipeline + review backfill | **done** — feeds, batched lookup, review backfill all run live |
 | 3 | scoring + run_log | **done** — 645 apps scored, every input persisted in `components` |
 | 4 | dashboard | **written, never compiled** — needs Node and a Vercel account (see `dashboard/README.md`) |
@@ -20,17 +20,24 @@ Daily GitHub Actions cron → Postgres (Supabase) → dashboard.
 
 ## The asymmetry worth knowing before reading any output
 
-The two stores are not mirror images, and Phase 0 proved it (FINDINGS.md §3):
+The two stores are not mirror images, and — importantly — **neither store's obvious channel
+is the one that works.** Both had to be found by measuring release dates in real data;
+Phase 0 got both of them backwards (FINDINGS.md §3 and §4b).
 
-- **iOS — day-zero discovery, coarser velocity.** Three working new-app RSS feeds, ~100
-  per genre. Apps are catchable the day they ship. Velocity comes from `Δ userRatingCount`.
-- **Play — lagging discovery, exact velocity.** `NEW_FREE` is dead, sitemaps are dateless,
-  and search ranks by popularity, so apps are usually found *after* some traction. But once
-  found, `Δ realInstalls` is the truest growth signal in either store.
+| | Play | iOS |
+|---|---|---|
+| Velocity signal | `Δ realInstalls` — **exact daily installs** | `Δ userRatingCount` — ~20× denser than text reviews |
+| Channel that actually finds new apps | **keyword search** (53% under 120d, youngest 1 day) | **charts** (youngest 0 days, often at high rank) |
+| Channel that sounds right but isn't | charts — median find is 2,005 days old | `newapplications` — frozen since 2026-07-07 |
+| Cheapest youth filter | install band under 100 → 93% are under 120 days | none; chart rank is the proxy |
+| Enrichment cost | 1 request per app | 200 apps per request |
 
-So an iOS row can be a genuine day-3 catch; a Play row usually means "already moving, now
-measured precisely." Play will systematically miss the earliest window — that surface is
-simply not exposed any more.
+So an iOS row can be a genuine day-0 catch, while a Play row usually means "already moving,
+now measured precisely." Play's earliest window is genuinely lost — that surface is not
+exposed any more — but its numbers, once found, are the truest in either store.
+
+**Velocity is never combined across stores.** Installs and ratings are different units;
+scores are z-ranked within a store so an app only competes with apps measured the same way.
 
 ## Setup
 
