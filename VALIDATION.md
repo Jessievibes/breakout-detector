@@ -1,20 +1,20 @@
 # Phase 0 validation results
 
-- **Run environment:** local / residential IP
-- **Started (UTC):** 2026-08-17T14:42:58+00:00
-- **Duration:** 4.1 min
-- **HTTP:** 61 req, 403=0 429=0 5xx=0 empty200=0 err=0 (0.0% anomalous)
-- **Status codes:** {200: 29}
+- **Run environment:** GitHub Actions (Linux, run 32043548775)
+- **Started (UTC):** 2026-08-17T15:50:51+00:00
+- **Duration:** 12.4 min
+- **HTTP:** 193 req, 403=0 429=0 5xx=0 empty200=0 err=0 (0.0% anomalous)
+- **Status codes:** {200: 42, 404: 4}
 
 | # | Test | Gate | Result | Detail |
 |---|------|------|--------|--------|
-| T1 | Play realInstalls exact | yes | PASS | 4 exact / 0 banded / 0 failed of 4 |
-| T2 | Play sustained volume | yes | PASS | 15 fetches: 15 ok, 0 parser-null (0.0%), 0 anomalies (0.0%) |
+| T1 | Play realInstalls exact | yes | PASS | 10 exact / 0 banded / 0 failed of 10 |
+| T2 | Play sustained volume | yes | PASS | 100 fetches: 100 ok, 0 parser-null (0.0%), 0 anomalies (0.0%) |
 | T3 | Apple endpoint surface | yes | PASS | chart cap 100; new-app feeds working: newapplications, newfreeapplications, newpaidapplications; lookup 200/200; reviews xml=50 json=50; utc parse ok |
-| T4 | Young-app review depth | info | PASS | 4 apps aged 30-90d: 1 truncated at the 500 cap (25%). Backfill is effectively complete |
-| T5 | Play reviews paging | info | PASS | 2 pages, 200 reviews, oldest 2026-08-16 |
-| T6 | Search sweep + band filter | info | PASS | 74 distinct apps / 3 terms (cap 30/term); young rate low-band 0% vs high-band 0% — band pre-filter NO BETTER than random |
-| T7 | Developer-page discovery | info | PASS | 2/2 developer pages parsed via `developer?id=<name>` (legacy `dev?id=` is 404). Regex parser, no library support |
+| T4 | Young-app review depth | info | PASS | 10 apps aged 30-90d: 1 truncated at the 500 cap (10%). Backfill is effectively complete |
+| T5 | Play reviews paging | info | PASS | 3 pages, 300 reviews, oldest 2026-08-16 |
+| T6 | Search sweep + band filter | info | PASS | 248 distinct apps / 10 terms (cap 30/term); young rate low-band 0% vs high-band 0% — band pre-filter NO BETTER than random |
+| T7 | Developer-page discovery | info | FAIL | 3/5 developer pages parsed via `developer?id=<name>` (legacy `dev?id=` is 404). Regex parser, no library support |
 
 ## Verdict
 
