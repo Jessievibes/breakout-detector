@@ -25,6 +25,26 @@ declare
   inserted integer;
 begin
 
+-- Relaunch detection by contradiction, before anything is scored.
+--
+-- A review posted in 2015 cannot belong to an app released in 2026. Where backfilled review
+-- history predates the store's own release date, the release date is the thing that is wrong:
+-- the app was re-listed, or its listing was reset. "Centauro: sporting goods" claims a 2026
+-- release and carries reviews from 2015-07-31 — eleven years of history on a supposedly
+-- four-month-old app, which had it ranking among new Play apps.
+--
+-- This is proof rather than inference, which is what makes it usable. The obvious
+-- alternative — treating a falling rating count as a reset — fired on 79 established apps in
+-- one run because Apple's counts wobble between queries, and had to be abandoned.
+update app a
+   set relaunch_suspect = true
+  from (select app_id, min(posted_at)::date as first_review
+          from review_event group by app_id) r
+ where a.id = r.app_id
+   and a.released is not null
+   and r.first_review < a.released - 30
+   and a.relaunch_suspect = false;
+
 with eligible as (
   -- 120 days keeps the z-score population coherent: a two-year-old app's "momentum" is a
   -- different phenomenon and would distort the distribution these apps are measured against.
