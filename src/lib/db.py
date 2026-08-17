@@ -23,12 +23,25 @@ load_dotenv()  # .env for local runs; Actions injects real env vars and this is 
 
 
 def dsn() -> str:
-    url = os.environ.get("DATABASE_URL")
+    """The connection string, defensively cleaned.
+
+    Two mistakes are common enough when copying a value into a GitHub secret that silently
+    tolerating them beats failing with an opaque libpq error: a trailing newline, and pasting
+    the whole `DATABASE_URL=...` line into a field that wants only the value.
+    """
+    url = (os.environ.get("DATABASE_URL") or "").strip().strip('"').strip("'")
+
+    if url.startswith("DATABASE_URL="):
+        print("! DATABASE_URL contained its own name as a prefix — stripping it.")
+        print("  (In a GitHub secret, the value field takes only the URL.)")
+        url = url[len("DATABASE_URL=") :].strip()
+
     if not url:
         raise SystemExit(
             "DATABASE_URL is not set.\n"
-            "  Supabase → Project Settings → Database → Connection string → URI\n"
-            "  Local: put it in .env (gitignored) and run via `python -m src.jobs.<name>`"
+            "  Supabase → Connect → Session pooler → URI (replace [YOUR-PASSWORD])\n"
+            "  Local:   put it in .env (gitignored), run via `python -m src.jobs.<name>`\n"
+            "  Actions: repo Settings → Secrets and variables → Actions"
         )
     return url
 

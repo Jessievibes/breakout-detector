@@ -40,6 +40,17 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # Two separately-named preflight steps, deliberately. GitHub does not serve Actions
+      # logs anonymously, so on a public repo a failure shows which STEP failed but not what
+      # it said. Splitting the checks makes the step name itself the diagnosis:
+      #   "Preflight: config shape" fails  -> the secret is malformed
+      #   "Preflight: database reachable"  -> DNS, network, or credentials
+      - name: 'Preflight: config shape'
+        run: python -m src.jobs.preflight config
+
+      - name: 'Preflight: database reachable'
+        run: python -m src.jobs.preflight connect
+
       - name: Apply schema (idempotent)
         run: python -m src.jobs.migrate
 
