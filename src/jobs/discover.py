@@ -81,10 +81,10 @@ def run_ios(conn, rl: log.RunLog, *, day: date) -> dict:
     print(f"  → newapps_feed: {len(new_apps)} ids, {new_count} new")
 
     print("[iOS] chart feeds (discovery + rank)")
-    chart_apps, ranks = ios_feeds.fetch_chart_ranks(fetcher)
+    chart_apps, ranks, chart_counts = ios_feeds.fetch_chart_ranks(fetcher)
     chart_count = db.insert_apps_bulk(conn, "ios", chart_apps)
     conn.commit()
-    ranked = db.upsert_ranks(conn, "ios", ranks, day)
+    ranked = db.upsert_ranks(conn, "ios", ranks, day, chart_counts)
     conn.commit()
     per_channel["chart"] = {"found": len(chart_apps), "new": chart_count, "ranked": ranked}
     total_new += chart_count

@@ -55,6 +55,8 @@ def normalize(r: dict) -> dict:
         "avg_rating": round(r["averageUserRating"], 4) if r.get("averageUserRating") else None,
         "review_count": None,  # filled by the review backfill, not available here
         "version": r.get("version"),
+        # Apple publishes no histogram, but it does say when the developer last shipped.
+        "updated_at": _parse_apple_date(r.get("currentVersionReleaseDate")),
     }
 
 
@@ -105,6 +107,7 @@ SNAPSHOT_FIELDS = (
     "avg_rating",
     "review_count",
     "version",
+    "updated_at",
 )
 
 

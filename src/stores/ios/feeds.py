@@ -160,8 +160,8 @@ def fetch_chart_ranks(
     fetcher: Fetcher,
     genres: list[int] | None = None,
     feeds: list[str] | None = None,
-) -> tuple[list[tuple[str, str, None]], dict[str, int]]:
-    """Sweep chart feeds. Returns (discovery triples, {track_id: best_rank}).
+) -> tuple[list[tuple[str, str, None]], dict[str, int], dict[str, int]]:
+    """Sweep chart feeds. Returns (discovery triples, {id: best_rank}, {id: chart_count}).
 
     Rank is the *best* position across every chart the app appears in, because an app ranked
     #3 in a games subgenre and #150 overall is meaningfully a top-3 app in its niche. Feeding
@@ -170,6 +170,7 @@ def fetch_chart_ranks(
     genres = genres if genres is not None else GENRES + GAME_GENRES
     feeds = feeds if feeds is not None else CHART_FEEDS
     best: dict[str, int] = {}
+    appearances: dict[str, int] = {}
 
     for feed in feeds:
         for genre in genres:
@@ -179,6 +180,10 @@ def fetch_chart_ranks(
                     continue
                 if tid not in best or position < best[tid]:
                     best[tid] = position
+                # Breadth, where best_rank is depth: #40 across five categories is a wider
+                # phenomenon than #3 in one niche, and the sweep already sees every position
+                # before collapsing them.
+                appearances[tid] = appearances.get(tid, 0) + 1
         print(f"  {feed}: {len(best)} ranked apps so far")
 
-    return [(tid, "chart", None) for tid in sorted(best)], best
+    return [(tid, "chart", None) for tid in sorted(best)], best, appearances

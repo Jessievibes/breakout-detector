@@ -41,7 +41,10 @@ totals as (
   select distinct on (s.app_id)
          s.app_id,
          coalesce(s.install_exact, s.rating_count)::numeric as cumulative,
-         s.version
+         s.version,
+         s.histogram,
+         s.chart_count,
+         s.updated_at
     from snapshot s
     join eligible e on e.id = s.app_id
    where s.day <= target_day
@@ -113,6 +116,10 @@ raw as (
          (v.v7 is null and c.v_est is not null)  as cold_start,
          c.reviews_7d,
          t.cumulative / e.age_days               as lifetime_rate,
+         histogram_suspicion(t.histogram)        as fake_rating_score,
+         t.chart_count,
+         case when t.updated_at is not null
+              then (target_day - t.updated_at)::numeric end as days_since_update,
          r.rank_now,
          r.rank_then,
          e.relaunch_suspect,
@@ -151,12 +158,22 @@ components as (
          -- the z-score a one-app show.
          case when r.lifetime_rate is not null and r.lifetime_rate > 0
               then log((r.lifetime_rate + 1)::numeric) end               as log_lifetime,
+         -- Breadth, where rank is depth. Charting at #40 across five categories is a wider
+         -- phenomenon than #3 in a single niche, and the chart sweep already sees both.
+         case when r.chart_count is not null
+              then log((r.chart_count + 1)::numeric) end                 as breadth,
          -- Taper rather than a cliff: v1 zeroed at 90 days, so an app scored 4.2 one day and
          -- 0.0 the next. Half weight at the 120-day eligibility edge.
          greatest(0.1, 1 - r.age_days / 240.0)                           as recency,
          greatest(0.1,
                   1.0 - (case when r.clone_suspect then 0.4 else 0 end)
-                      - (case when r.relaunch_suspect then 0.3 else 0 end))
+                      - (case when r.relaunch_suspect then 0.3 else 0 end)
+                      -- Purchased ratings: an almost-pure 5-star distribution with no tail
+                      -- of complaints. Real enthusiasm still produces 2s and 3s.
+                      - (coalesce(r.fake_rating_score, 0) * 0.35)
+                      -- Abandonment. Two apps with the same curve are not equally
+                      -- interesting when one has not shipped in two months.
+                      - (case when r.days_since_update > 60 then 0.15 else 0 end))
                                                                           as trust
     from raw r
 ),
@@ -171,6 +188,8 @@ bounds as (
          percentile_cont(0.95) within group (order by vs_lifetime)   as vsl_hi,
          percentile_cont(0.05) within group (order by volume)        as vol_lo,
          percentile_cont(0.95) within group (order by volume)        as vol_hi,
+         percentile_cont(0.05) within group (order by breadth)       as brd_lo,
+         percentile_cont(0.95) within group (order by breadth)       as brd_hi,
          percentile_cont(0.05) within group (order by log_lifetime)  as lif_lo,
          percentile_cont(0.95) within group (order by log_lifetime)  as lif_hi
     from components
@@ -184,7 +203,8 @@ clipped as (
          least(greatest(c.momentum,    b.mom_lo), b.mom_hi)::numeric    as w_momentum,
          least(greatest(c.vs_lifetime, b.vsl_lo), b.vsl_hi)::numeric    as w_vs_lifetime,
          least(greatest(c.volume,      b.vol_lo), b.vol_hi)::numeric    as w_volume,
-         least(greatest(c.log_lifetime, b.lif_lo), b.lif_hi)::numeric   as w_lifetime
+         least(greatest(c.log_lifetime, b.lif_lo), b.lif_hi)::numeric   as w_lifetime,
+         least(greatest(c.breadth,      b.brd_lo), b.brd_hi)::numeric   as w_breadth
     from components c
     join bounds b on b.store = c.store
 ),
@@ -196,7 +216,8 @@ moments as (
          avg(w_vs_lifetime)  as vsl_avg,  nullif(stddev_samp(w_vs_lifetime), 0)  as vsl_sd,
          avg(rank_velocity)  as rnk_avg,  nullif(stddev_samp(rank_velocity), 0)  as rnk_sd,
          avg(w_volume)       as vol_avg,  nullif(stddev_samp(w_volume), 0)       as vol_sd,
-         avg(w_lifetime)     as lif_avg,  nullif(stddev_samp(w_lifetime), 0)     as lif_sd
+         avg(w_lifetime)     as lif_avg,  nullif(stddev_samp(w_lifetime), 0)     as lif_sd,
+         avg(w_breadth)      as brd_avg,  nullif(stddev_samp(w_breadth), 0)      as brd_sd
     from clipped
    group by store
 ),
@@ -207,7 +228,8 @@ scored as (
          (c.w_vs_lifetime - m.vsl_avg) / m.vsl_sd as z_vs_lifetime,
          (c.rank_velocity - m.rnk_avg) / m.rnk_sd as z_rank_velocity,
          (c.w_volume      - m.vol_avg) / m.vol_sd as z_volume,
-         (c.w_lifetime    - m.lif_avg) / m.lif_sd as z_lifetime
+         (c.w_lifetime    - m.lif_avg) / m.lif_sd as z_lifetime,
+         (c.w_breadth     - m.brd_avg) / m.brd_sd as z_breadth
     from clipped c
     join moments m on m.store = c.store
 ),
@@ -220,12 +242,14 @@ weighted as (
         + coalesce(0.25 * s.z_vs_lifetime, 0)
         + coalesce(0.20 * s.z_rank_velocity, 0)
         + coalesce(0.15 * s.z_volume, 0)
-        + coalesce(0.20 * s.z_lifetime, 0)) as weighted_sum,
+        + coalesce(0.20 * s.z_lifetime, 0)
+        + coalesce(0.10 * s.z_breadth, 0)) as weighted_sum,
          (case when s.z_momentum      is not null then 0.40 else 0 end
         + case when s.z_vs_lifetime   is not null then 0.25 else 0 end
         + case when s.z_rank_velocity is not null then 0.20 else 0 end
         + case when s.z_volume        is not null then 0.15 else 0 end
-        + case when s.z_lifetime      is not null then 0.20 else 0 end) as weight_total
+        + case when s.z_lifetime      is not null then 0.20 else 0 end
+        + case when s.z_breadth       is not null then 0.10 else 0 end) as weight_total
     from scored s
 )
 
@@ -256,6 +280,11 @@ select w.app_id,
          'z_volume',        round(w.z_volume, 4),
          'log_lifetime',    round(w.log_lifetime, 4),
          'z_lifetime',      round(w.z_lifetime, 4),
+         'chart_count',     w.chart_count,
+         'breadth',         round(w.breadth, 4),
+         'z_breadth',       round(w.z_breadth, 4),
+         'days_since_update', w.days_since_update,
+         'fake_rating_score', w.fake_rating_score,
          'weight_total',  w.weight_total,
          'recency',       round(w.recency, 4),
          'trust',         round(w.trust, 4),

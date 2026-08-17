@@ -80,13 +80,67 @@ CATEGORIES = [
 ]
 
 SEARCH_TERMS = [
-    "habit tracker", "ai photo editor", "budget planner", "sleep sounds", "workout log",
-    "focus timer", "recipe manager", "language flashcards", "mood journal",
-    "receipt scanner", "ai assistant", "meditation timer", "expense split", "plant care",
-    "pomodoro", "water reminder", "step counter", "voice recorder transcribe",
-    "pdf scanner", "calorie counter", "period tracker", "baby log", "dog training",
-    "chess puzzles", "sudoku daily", "word game offline", "idle tycoon",
-    "merge puzzle", "escape room", "cozy farm game",
+    # Search is Play's young-app channel (53% of finds under 120 days), and its recall is
+    # bounded by ~30 results per term. So coverage scales with the number of terms, not with
+    # effort per term — going from 30 to ~180 is the cheapest available improvement to the
+    # funnel, and the funnel is what limits everything downstream.
+    #
+    # Terms are chosen to sit where indie developers actually ship: narrow utilities and
+    # trackers, not "social network". Broad terms return entrenched incumbents; specific ones
+    # return the long tail, which is where anything new lives.
+    # trackers and loggers
+    "habit tracker", "mood journal", "sleep tracker", "workout log", "period tracker",
+    "water reminder", "step counter", "calorie counter", "weight tracker", "baby log",
+    "expense tracker", "budget planner", "receipt scanner", "expense split", "debt payoff",
+    "subscription tracker", "time tracker", "mileage log", "fuel log", "medication reminder",
+    "blood pressure log", "glucose tracker", "symptom tracker", "cycle tracker",
+    "plant care", "pet care log", "reading log", "movie tracker", "gratitude journal",
+    "dream journal",
+    # AI tools — the densest category for new launches right now
+    "ai photo editor", "ai assistant", "ai chat", "ai video generator", "ai headshot",
+    "ai voice changer", "ai music generator", "ai writing assistant", "ai resume builder",
+    "ai interior design", "ai recipe", "ai study helper", "ai math solver", "ai translator",
+    "ai avatar", "ai background remover", "ai photo enhancer", "ai logo maker",
+    "ai presentation", "ai note taker",
+    # productivity and focus
+    "focus timer", "pomodoro", "task manager", "todo list", "note taking", "mind map",
+    "kanban board", "daily planner", "goal tracker", "routine builder", "checklist app",
+    "voice recorder transcribe", "pdf scanner", "document scanner", "signature pdf",
+    "file manager", "clipboard manager", "password manager", "two factor authenticator",
+    "qr code scanner",
+    # learning
+    "language flashcards", "spaced repetition", "vocabulary builder", "learn spanish",
+    "learn japanese", "sign language", "chess puzzles", "math practice", "coding practice",
+    "typing practice", "music theory", "guitar tuner", "piano lessons", "drum machine",
+    "metronome", "ear training",
+    # health and wellbeing
+    "meditation timer", "breathing exercise", "sleep sounds", "white noise", "anxiety relief",
+    "stretching routine", "yoga poses", "posture reminder", "eye exercise", "fasting timer",
+    "hydration reminder", "cold shower", "quit smoking", "sobriety counter", "therapy journal",
+    # home, food, life admin
+    "recipe manager", "meal planner", "grocery list", "pantry tracker", "wine cellar",
+    "cocktail recipes", "home inventory", "chore chart", "packing list", "trip planner",
+    "flight tracker", "currency converter", "unit converter", "tip calculator",
+    "split the bill", "car maintenance", "garden planner", "bird identifier",
+    "plant identifier", "mushroom identifier",
+    # small games, the indie long tail
+    "idle tycoon", "merge puzzle", "escape room", "cozy farm game", "word game offline",
+    "sudoku daily", "crossword puzzle", "jigsaw puzzle", "solitaire classic", "mahjong",
+    "trivia quiz", "logic puzzle", "block puzzle", "match 3 offline", "roguelike deckbuilder",
+    "incremental clicker", "physics sandbox", "pixel dungeon", "text adventure",
+    "chess variant", "tower defense", "farm simulator", "cooking game", "fishing game",
+    "survival craft", "bullet hell", "rhythm game", "hidden object", "coloring book",
+    "drawing game",
+    # creative and media
+    "video editor", "photo collage", "meme maker", "sticker maker", "gif maker",
+    "screen recorder", "podcast player", "audiobook player", "ebook reader", "comic reader",
+    "radio streaming", "karaoke", "beat maker", "sample pad", "vocal remover",
+    # utility niches
+    "wifi analyzer", "speed test", "battery monitor", "storage cleaner", "app lock",
+    "vpn free", "ad blocker", "call recorder", "spam blocker", "contact backup",
+    "sms backup", "widget maker", "icon pack", "wallpaper 4k", "live wallpaper",
+    "keyboard theme", "font changer", "flashlight", "compass", "level tool",
+    "measure distance", "noise meter", "barcode scanner", "ocr text", "handwriting to text",
 ]
 
 

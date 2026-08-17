@@ -22,15 +22,17 @@ import sys
 import time
 
 from ..lib import db, log
-from ..lib.http import Blocked, apple_fetcher
+from ..lib.http import Blocked, apple_fetcher, play_fetcher
 from ..stores.ios import reviews as ios_reviews
+from ..stores.play import reviews as play_reviews
 
 
-def run(conn, rl: log.RunLog, *, budget_seconds: int, limit: int) -> dict:
-    fetcher = apple_fetcher()
-    queue = db.backfill_queue(conn, "ios", limit)
+def run(conn, rl: log.RunLog, *, store: str, budget_seconds: int, limit: int) -> dict:
+    fetcher = apple_fetcher() if store == "ios" else play_fetcher()
+    module = ios_reviews if store == "ios" else play_reviews
+    queue = db.backfill_queue(conn, store, limit)
     deadline = time.monotonic() + budget_seconds
-    print(f"queue: {len(queue)} ios apps, budget {budget_seconds // 60} min")
+    print(f"queue: {len(queue)} {store} apps, budget {budget_seconds // 60} min")
 
     counts = {"apps": 0, "reviews": 0, "truncated": 0, "throttled": 0, "empty": 0}
 
@@ -41,8 +43,8 @@ def run(conn, rl: log.RunLog, *, budget_seconds: int, limit: int) -> dict:
 
         app_id, sid = row["id"], row["store_app_id"]
         try:
-            reviews, truncated = ios_reviews.fetch_all_reviews(fetcher, sid)
-        except ios_reviews.Throttled as e:
+            reviews, truncated = module.fetch_all_reviews(fetcher, sid)
+        except module.Throttled as e:
             # Unknown, not zero. Leave the flag false so the whole app is retried.
             counts["throttled"] += 1
             print(f"  [{i}/{len(queue)}] THROTTLED {sid}: {e}")
@@ -68,15 +70,21 @@ def run(conn, rl: log.RunLog, *, budget_seconds: int, limit: int) -> dict:
                 f"  [{i}/{len(queue)}] apps={counts['apps']} reviews={counts['reviews']} "
                 f"truncated={counts['truncated']} throttled={counts['throttled']}"
             )
-            rl.update(**counts, **fetcher.stats.as_dict())
+            rl.update(**{f"{store}_{k}": v for k, v in counts.items()}, **fetcher.stats.as_dict())
 
-    rl.update(**counts, **fetcher.stats.as_dict())
-    print(f"→ {counts}")
+    rl.update(**{f"{store}_{k}": v for k, v in counts.items()}, **fetcher.stats.as_dict())
+    print(f"→ {store}: {counts}")
     return counts
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Backfill iOS review history")
+    ap = argparse.ArgumentParser(description="Backfill review history")
+    ap.add_argument(
+        "--stores",
+        default="ios,play",
+        help="comma-separated subset of ios,play. Play is the expensive side — no batch "
+        "endpoint — so the time box matters more there.",
+    )
     ap.add_argument(
         "--budget-minutes",
         type=int,
@@ -86,10 +94,15 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=500, help="max apps to consider this run")
     args = ap.parse_args()
 
+    stores = [s.strip() for s in args.stores.split(",") if s.strip()]
+    # Split the budget evenly so one store cannot starve the other.
+    per_store = max(60, (args.budget_minutes * 60) // max(len(stores), 1))
+
     with log.run("backfill") as rl:
         try:
             with db.connect() as conn:
-                run(conn, rl, budget_seconds=args.budget_minutes * 60, limit=args.limit)
+                for store in stores:
+                    run(conn, rl, store=store, budget_seconds=per_store, limit=args.limit)
         except Blocked as e:
             print(f"\nBLOCKED: {e}")
             raise

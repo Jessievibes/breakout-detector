@@ -282,7 +282,8 @@ def last_snapshot_metric(conn, app_id: int, column: str) -> int | None:
         return row["v"] if row else None
 
 
-def upsert_ranks(conn, store: str, ranks: dict[str, int], day: date) -> int:
+def upsert_ranks(conn, store: str, ranks: dict[str, int], day: date,
+                 counts: dict[str, int] | None = None) -> int:
     """Write chart positions into today's snapshot rows.
 
     Runs from the discovery job, before enrichment fills in the metrics — the upsert lets
@@ -294,18 +295,22 @@ def upsert_ranks(conn, store: str, ranks: dict[str, int], day: date) -> int:
     """
     if not ranks:
         return 0
-    sids, positions = zip(*ranks.items())
+    counts = counts or {}
+    sids = list(ranks)
+    positions = [ranks[s] for s in sids]
+    appearances = [counts.get(s) for s in sids]
     with conn.cursor() as cur:
         cur.execute(
             """
-            insert into snapshot (app_id, day, best_rank)
-            select a.id, %s::date, t.rank
-              from unnest(%s::text[], %s::int[]) as t(sid, rank)
+            insert into snapshot (app_id, day, best_rank, chart_count)
+            select a.id, %s::date, t.rank, t.n
+              from unnest(%s::text[], %s::int[], %s::int[]) as t(sid, rank, n)
               join app a on a.store = %s::store_kind and a.store_app_id = t.sid
             on conflict (app_id, day) do update
-               set best_rank = least(snapshot.best_rank, excluded.best_rank)
+               set best_rank   = least(snapshot.best_rank, excluded.best_rank),
+                   chart_count = greatest(coalesce(snapshot.chart_count, 0), excluded.chart_count)
             """,
-            [day, list(sids), list(positions), store],
+            [day, sids, positions, appearances, store],
         )
         return cur.rowcount or 0
 

@@ -67,7 +67,20 @@ def fetch_detail(fetcher: Fetcher, store_app_id: str) -> dict:
         "avg_rating": round(raw["score"], 4) if raw.get("score") else None,
         "review_count": raw.get("reviews"),
         "version": raw.get("version"),
+        # Free in every detail response, previously discarded. Distribution shape is a
+        # fake-review signal; last-update date separates active development from abandonment.
+        "histogram": raw.get("histogram"),
+        "updated_at": _epoch_to_date(raw.get("updated")),
     }
+
+
+def _epoch_to_date(value) -> date | None:
+    if not isinstance(value, (int, float)) or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, tz=timezone.utc).date()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 APP_FIELDS = ("name", "developer", "developer_id", "category", "released", "price", "icon_url")
@@ -78,6 +91,8 @@ SNAPSHOT_FIELDS = (
     "avg_rating",
     "review_count",
     "version",
+    "histogram",
+    "updated_at",
 )
 
 
