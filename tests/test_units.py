@@ -66,6 +66,17 @@ class TestDeltaGuards(unittest.TestCase):
         self.assertIsNone(classify_rating_drop(12, 5_000))
         self.assertIsNone(classify_rating_drop(None, 5_000))
 
+    def test_tiny_dips_are_noise_not_relaunches(self):
+        """Apple's counts wobble as aggregates recompute. Flagging any decrease put 79 apps
+        on the naughty list in one run, including Retro Bowl at 916,575 ratings."""
+        self.assertIsNone(classify_rating_drop(916_575, 916_570))
+        self.assertIsNone(classify_rating_drop(1_000, 999))
+        self.assertIsNone(classify_rating_drop(1_000, 600))  # 40% — still not a reset
+
+    def test_low_volume_drops_are_ignored(self):
+        """Going from 8 ratings to 3 is churn, not a relaunch."""
+        self.assertIsNone(classify_rating_drop(8, 3))
+
 
 class TestNullRateTracker(unittest.TestCase):
     def test_silent_below_threshold(self):

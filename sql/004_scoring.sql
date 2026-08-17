@@ -168,9 +168,17 @@ components as (
          greatest(0.1,
                   1.0 - (case when r.clone_suspect then 0.4 else 0 end)
                       - (case when r.relaunch_suspect then 0.3 else 0 end)
-                      -- Purchased ratings: an almost-pure 5-star distribution with no tail
-                      -- of complaints. Real enthusiasm still produces 2s and 3s.
-                      - (coalesce(r.fake_rating_score, 0) * 0.35)
+                      -- NO histogram penalty. The obvious version of this — "almost all
+                      -- 5-star with no mid-range must be purchased" — was tested against
+                      -- real distributions and flags beloved mature apps: Genius Scan and a
+                      -- 1.4M-rating pregnancy tracker both tripped it, while carrying tens
+                      -- of thousands of genuine 1-stars. On Play, ~90% five-star is what
+                      -- *quality* looks like, and the mid-band share shrinks with volume.
+                      -- The shape alone cannot separate "loved" from "bought". A workable
+                      -- version needs velocity — a rating burst inconsistent with install
+                      -- rate or review arrival — which needs history we do not have yet.
+                      -- fake_rating_score is still computed and persisted, unused, so the
+                      -- idea can be revisited against real time series.
                       -- Abandonment. Two apps with the same curve are not equally
                       -- interesting when one has not shipped in two months.
                       - (case when r.days_since_update > 60 then 0.15 else 0 end))

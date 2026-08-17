@@ -114,14 +114,28 @@ def check_install_delta(prev: int | None, cur: int | None, store_app_id: str) ->
         )
 
 
+# A genuine ratings reset takes the count to near zero. Anything short of losing half is
+# noise, not a relaunch.
+RELAUNCH_DROP_RATIO = 0.5
+RELAUNCH_MIN_PRIOR = 50
+
+
 def classify_rating_drop(prev: int | None, cur: int | None) -> str | None:
     """Spec §6.6. iOS rating counts *can* fall: developers reset ratings on a version
     release. That is not a parser bug — it is a relaunch signal.
 
-    Returns 'relaunch' when a drop is detected, else None. The caller nulls that window's
-    velocity (the delta is meaningless) and sets relaunch_suspect, because a developer
-    wiping their rating history is exactly the behaviour `trust` should penalise.
+    But it has to be a real collapse. The first version returned 'relaunch' on *any*
+    decrease, and flagged 79 apps in one run — Retro Bowl at 916,575 ratings, Kik at
+    484,504. None of them reset anything; Apple's counts simply wobble by a handful between
+    queries as aggregates recompute. A one-in-a-million dip was costing those apps a 0.3
+    trust penalty.
+
+    Requires both a halving and enough prior volume to mean something. Returns 'relaunch' or
+    None; the caller nulls that window's velocity and sets relaunch_suspect, because wiping
+    rating history is exactly what `trust` should penalise.
     """
     if prev is None or cur is None:
         return None
-    return "relaunch" if cur < prev else None
+    if prev < RELAUNCH_MIN_PRIOR:
+        return None
+    return "relaunch" if cur < prev * RELAUNCH_DROP_RATIO else None

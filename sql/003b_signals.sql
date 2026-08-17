@@ -51,7 +51,11 @@ as $$
 $$;
 
 comment on function histogram_suspicion(int[]) is
-  '0 = normal, 0.5 = odd, 1.0 = implausibly clean. Returns 0 below 50 ratings, where the '
-  'distribution carries no information yet.';
+  'NOT USED IN SCORING — retained for future work. Tested against real distributions and it '
+  'flags quality, not fraud: Genius Scan and a 1.4M-rating pregnancy tracker both scored 1.0 '
+  'while carrying tens of thousands of genuine 1-star ratings. On Play, ~90% five-star is '
+  'what a well-liked app looks like. Separating bought ratings from earned ones needs '
+  'velocity (a burst inconsistent with install rate or review arrival), not distribution '
+  'shape.';
 
 commit;
