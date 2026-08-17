@@ -13,10 +13,10 @@ Daily GitHub Actions cron → Postgres (Supabase) → dashboard.
 |---|---|---|
 | 0 | validation spike | **done** — Actions runner passes all gates, 193 requests at 0% anomalies ([FINDINGS.md §0](FINDINGS.md)) |
 | 1 | schema + Play pipeline | **code complete**, unrun against a live database (needs `DATABASE_URL`) |
-| 2 | iOS pipeline + review backfill | not started |
-| 3 | scoring + run_log | not started |
-| 4 | dashboard | not started |
-| 5 | trust heuristics, twin matching, retention | not started |
+| 2 | iOS pipeline + review backfill | **done** — feeds, batched lookup, review backfill all run live |
+| 3 | scoring + run_log | **done** — 645 apps scored, every input persisted in `components` |
+| 4 | dashboard | **written, never compiled** — needs Node and a Vercel account (see `dashboard/README.md`) |
+| 5 | trust heuristics, twin matching, retention | **done** — 79 twin pairs, weekly rollup ready |
 
 ## The asymmetry worth knowing before reading any output
 
