@@ -28,7 +28,11 @@ from google_play_scraper import reviews as _play_reviews
 from ...lib.http import Fetcher
 
 PAGE_SIZE = 200
-MAX_PAGES = 8  # ~1600 reviews; a cost ceiling, not a store limit
+# ~800 reviews. A cost ceiling, not a store limit — and deliberately lower than it was:
+# one run spent its whole budget reaching this cap on a single established app. Inside the
+# 120-day scoring window an app with 800+ written reviews has already broken out loudly
+# enough that exhaustive history adds nothing.
+MAX_PAGES = 4
 
 
 class Throttled(RuntimeError):

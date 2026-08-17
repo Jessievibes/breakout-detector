@@ -315,16 +315,24 @@ def upsert_ranks(conn, store: str, ranks: dict[str, int], day: date,
         return cur.rowcount or 0
 
 
-def backfill_queue(conn, store: str, limit: int) -> list[dict]:
-    """Apps whose review history has never been pulled, most-rated first.
+def backfill_queue(conn, store: str, limit: int, max_age_days: int = 120) -> list[dict]:
+    """Apps whose review history has never been pulled — scoring-eligible only, most-rated first.
 
-    Ordering by rating count, not discovery time, because the budget is requests and written
-    reviews run at roughly 5% of star ratings. The first live backfill spent 36 of 40 requests
-    on apps with no ratings at all and recovered 12 reviews; those apps have no history to
-    recover, while a well-rated young app can have hundreds.
+    Two orderings learned the hard way, both from real runs:
 
-    Apps not yet enriched (no snapshot, so no rating count) sort last rather than being
-    excluded — they are unknown, not known-empty, and the next run will have their counts.
+    **Most-rated first**, because written reviews run at roughly 5% of star ratings, so an app
+    with no ratings has no history to recover. The first live backfill spent 36 of 40 requests
+    on empty apps and returned 12 reviews; reordering returned 3,349 from 10 apps.
+
+    **Eligible apps only**, because Play has no review cap. Apple stops at 500, which bounds
+    the cost per app, but Play will serve continuation tokens indefinitely — and "most-rated
+    first" over the whole catalogue means the single most expensive app goes first. One run
+    spent its entire budget on UC Browser: 1,600 reviews, still truncated, for an app far too
+    old to be scored. Restricting to the 120-day scoring window means the budget only buys
+    history that something will actually read.
+
+    Apps with no release date yet are excluded rather than sorted last — they are unenriched,
+    and enrichment runs daily, so they will qualify on their own within a day.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -341,10 +349,12 @@ def backfill_queue(conn, store: str, limit: int) -> list[dict]:
              where a.store = %s
                and a.reviews_backfilled = false
                and a.delisted = false
+               and a.released is not null
+               and a.released > current_date - %s
              order by s.rating_count desc nulls last, a.first_seen
              limit %s
             """,
-            [store, limit],
+            [store, max_age_days, limit],
         )
         return cur.fetchall()
 
