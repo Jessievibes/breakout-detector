@@ -15,7 +15,7 @@ Daily GitHub Actions cron → Postgres (Supabase) → dashboard.
 | 1 | schema + Play pipeline | **done** — running daily on Actions against Supabase |
 | 2 | iOS pipeline + review backfill | **done** — feeds, batched lookup, review backfill all run live |
 | 3 | scoring + run_log | **done** — 645 apps scored, every input persisted in `components` |
-| 4 | dashboard | **written, never compiled** — needs Node and a Vercel account (see `dashboard/README.md`) |
+| 4 | dashboard | **built and verified** against live data; needs a Vercel account to deploy |
 | 5 | trust heuristics, twin matching, retention | **done** — 79 twin pairs, weekly rollup ready |
 
 ## The asymmetry worth knowing before reading any output

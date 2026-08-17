@@ -1,33 +1,54 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { db, formatNumber, velocityLabel, type SnapshotRow } from '@/lib/db';
+import { sql, formatDate, formatNumber, velocityLabel } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
+
+type AppRow = {
+  id: number;
+  store: string;
+  name: string | null;
+  developer: string | null;
+  category: string | null;
+  released: unknown;
+  clone_suspect: boolean;
+  relaunch_suspect: boolean;
+};
+type SnapRow = {
+  day: unknown;
+  install_exact: string | null;
+  rating_count: number | null;
+  best_rank: number | null;
+  chart_count: number | null;
+};
 
 export default async function AppDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const appId = Number(id);
-  if (Number.isNaN(appId)) notFound();
+  if (!Number.isInteger(appId)) notFound();
 
-  const supabase = db();
-  const [appRes, snapRes, reviewRes, scoreRes] = await Promise.all([
-    supabase.from('app').select('*').eq('id', appId).single(),
-    supabase.from('snapshot').select('day, install_exact, rating_count, best_rank')
-      .eq('app_id', appId).order('day', { ascending: true }),
-    supabase.from('review_daily').select('day, n').eq('app_id', appId).order('day', { ascending: true }),
-    supabase.from('breakout_score').select('scored_on, score, components')
-      .eq('app_id', appId).order('scored_on', { ascending: false }).limit(1),
+  const db = sql();
+  const [apps, snaps, reviews, scores] = await Promise.all([
+    db<AppRow[]>`select id, store, name, developer, category, released,
+                        clone_suspect, relaunch_suspect
+                   from app where id = ${appId}`,
+    db<SnapRow[]>`select day, install_exact, rating_count, best_rank, chart_count
+                    from snapshot where app_id = ${appId} order by day`,
+    db<{ day: string; n: number }[]>`select day, n from review_daily
+                                      where app_id = ${appId} order by day`,
+    db<{ score: string; components: Record<string, unknown> }[]>`
+        select score, components from breakout_score
+         where app_id = ${appId} order by scored_on desc limit 1`,
   ]);
 
-  if (appRes.error || !appRes.data) notFound();
-  const app = appRes.data;
-  const snaps = (snapRes.data ?? []) as SnapshotRow[];
-  const reviews = (reviewRes.data ?? []) as { day: string; n: number }[];
-  const latest = scoreRes.data?.[0];
-  const components = (latest?.components ?? {}) as Record<string, unknown>;
+  const app = apps[0];
+  if (!app) notFound();
 
+  const latest = scores[0];
+  const components = latest?.components ?? {};
+  const isPlay = app.store === 'play';
   const cumulative = snaps.map((s) =>
-    app.store === 'play' ? s.install_exact : s.rating_count
+    isPlay ? (s.install_exact === null ? null : Number(s.install_exact)) : s.rating_count
   );
 
   return (
@@ -37,20 +58,26 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
       <header className="head">
         <h1>{app.name ?? '(unnamed)'}</h1>
         <p className="sub">
-          {app.developer ?? '—'} · {app.store} · {app.category ?? 'uncategorised'} ·
-          released {app.released ?? 'unknown'}
+          {app.developer ?? '—'} · {app.store} · {app.category ?? 'uncategorised'} · released{' '}
+          {formatDate(app.released)}
           {latest && <> · score <strong>{Number(latest.score).toFixed(2)}</strong></>}
+          {app.clone_suspect && <span className="tag warn">clone farm</span>}
+          {app.relaunch_suspect && (
+            <span className="tag warn" title="Review history predates the claimed release date">
+              relaunch
+            </span>
+          )}
         </p>
       </header>
 
       <section>
-        <h2>Cumulative {app.store === 'play' ? 'installs' : 'ratings'}</h2>
+        <h2>Cumulative {isPlay ? 'installs' : 'ratings'}</h2>
         {cumulative.filter((v) => v !== null).length > 1 ? (
           <Sparkline values={cumulative} />
         ) : (
           <p className="empty">
-            Needs two days of snapshots. Velocity cannot exist before the second
-            measurement — this is expected on a newly discovered app, not a fault.
+            Needs two days of snapshots. Velocity cannot exist before the second measurement —
+            expected on a newly discovered app, not a fault.
           </p>
         )}
       </section>
@@ -59,11 +86,10 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
         <h2>Review arrival</h2>
         {reviews.length > 1 ? (
           <>
-            <Sparkline values={reviews.map((r) => r.n)} />
+            <Sparkline values={reviews.map((r) => Number(r.n))} />
             <p className="note">
               Reconstructed from backfilled review timestamps, so it reaches back before this
-              app was first seen. Written reviews run at roughly 5% of star ratings, and the
-              feed caps at 500 per app.
+              app was first seen. Written reviews run at roughly 5% of star ratings.
             </p>
           </>
         ) : (
@@ -77,18 +103,20 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
           <thead>
             <tr>
               <th>Day</th>
-              <th className="num">{app.store === 'play' ? 'Installs' : 'Ratings'}</th>
-              <th className="num">Chart rank</th>
+              <th className="num">{isPlay ? 'Installs' : 'Ratings'}</th>
+              <th className="num">Best rank</th>
+              <th className="num">Charts</th>
             </tr>
           </thead>
           <tbody>
             {[...snaps].reverse().slice(0, 30).map((s) => (
-              <tr key={s.day}>
-                <td>{s.day}</td>
+              <tr key={formatDate(s.day)}>
+                <td>{formatDate(s.day)}</td>
                 <td className="num">
-                  {formatNumber(app.store === 'play' ? s.install_exact : s.rating_count)}
+                  {formatNumber(isPlay ? s.install_exact : s.rating_count)}
                 </td>
                 <td className="num">{s.best_rank ? `#${s.best_rank}` : '—'}</td>
+                <td className="num">{s.chart_count ?? '—'}</td>
               </tr>
             ))}
           </tbody>
@@ -103,12 +131,14 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
         </p>
         <table>
           <tbody>
-            {Object.entries(components).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => (
-              <tr key={k}>
-                <td className="dim">{k}</td>
-                <td className="num">{v === null ? '—' : String(v)}</td>
-              </tr>
-            ))}
+            {Object.entries(components)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([k, v]) => (
+                <tr key={k}>
+                  <td className="dim">{k}</td>
+                  <td className="num">{v === null ? '—' : String(v)}</td>
+                </tr>
+              ))}
           </tbody>
         </table>
       </section>
@@ -122,7 +152,7 @@ export default async function AppDetail({ params }: { params: Promise<{ id: stri
  * a missing measurement is not a crash to zero, and drawing it as one would invent a story.
  */
 function Sparkline({ values }: { values: (number | null)[] }) {
-  const points = values.filter((v): v is number => v !== null && v !== undefined);
+  const points = values.filter((v): v is number => v !== null && !Number.isNaN(v));
   if (points.length < 2) return null;
 
   const width = 640;
@@ -147,7 +177,7 @@ function Sparkline({ values }: { values: (number | null)[] }) {
         <path d={d} fill="none" stroke="currentColor" strokeWidth="2" />
       </svg>
       <figcaption className="dim">
-        {min.toLocaleString()} → {max.toLocaleString()} over {points.length} days
+        {min.toLocaleString()} → {max.toLocaleString()} over {points.length} points
       </figcaption>
     </figure>
   );

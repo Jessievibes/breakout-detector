@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { db, formatNumber, velocityLabel, type BreakoutRow } from '@/lib/db';
+import { sql, formatNumber, velocityLabel, type BreakoutRow } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -7,39 +7,38 @@ type Search = { store?: string; days?: string; via?: string; clones?: string };
 
 export default async function Page({ searchParams }: { searchParams: Promise<Search> }) {
   const sp = await searchParams;
-  const maxDays = sp.days ? Number(sp.days) : 120;
+  const maxDays = Number(sp.days ?? 120) || 120;
+  const store = sp.store === 'ios' || sp.store === 'play' ? sp.store : null;
+  const via = sp.via || null;
+  // Clone farms are hidden by default rather than deleted — scoring already applies a trust
+  // penalty, and being able to show them is how the heuristic gets tuned.
+  const showClones = sp.clones === 'show';
 
-  let query = db()
-    .from('breakout_today')
-    .select('*')
-    .order('score', { ascending: false })
-    .limit(200);
+  let rows: BreakoutRow[] = [];
+  let error: string | null = null;
 
-  if (sp.store === 'ios' || sp.store === 'play') query = query.eq('store', sp.store);
-  if (sp.via) query = query.eq('discovered_via', sp.via);
-  if (!Number.isNaN(maxDays)) query = query.lte('age_days', maxDays);
-  // Clone farms are suppressed by default rather than deleted — the scoring already applies
-  // a trust penalty, and being able to see what was filtered is how you tune the heuristic.
-  if (sp.clones !== 'show') query = query.eq('clone_suspect', false);
-
-  const { data, error } = await query;
-  if (error) {
-    return (
-      <main>
-        <h1>Breakout Detector</h1>
-        <p className="error">Query failed: {error.message}</p>
-      </main>
-    );
+  try {
+    const db = sql();
+    rows = (await db<BreakoutRow[]>`
+      select app_id, score, store, name, developer, category, released, age_days,
+             discovered_via, clone_suspect, cold_start, velocity_per_day, momentum, chart_rank
+        from breakout_today
+       where age_days <= ${maxDays}
+         and (${store}::text is null or store = ${store}::store_kind)
+         and (${via}::text is null or discovered_via = ${via})
+         and (${showClones} or clone_suspect = false)
+       limit 200
+    `) as unknown as BreakoutRow[];
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
   }
-
-  const rows = (data ?? []) as BreakoutRow[];
 
   return (
     <main>
       <header className="head">
         <h1>Breakout Detector</h1>
         <p className="sub">
-          {rows.length} apps · scored today · higher is faster-growing for its age
+          {error ? 'query failed' : `${rows.length} apps · higher score = faster-growing for its age`}
         </p>
       </header>
 
@@ -55,49 +54,57 @@ export default async function Page({ searchParams }: { searchParams: Promise<Sea
                 options={[['', 'Hidden'], ['show', 'Shown']]} />
       </nav>
 
-      <table>
-        <thead>
-          <tr>
-            <th className="num">#</th>
-            <th className="num">Score</th>
-            <th>App</th>
-            <th>Store</th>
-            <th className="num">Age</th>
-            <th className="num">Velocity</th>
-            <th className="num">Rank</th>
-            <th>Found via</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={r.app_id}>
-              <td className="num dim">{i + 1}</td>
-              <td className="num strong">{Number(r.score).toFixed(2)}</td>
-              <td>
-                <Link href={`/app/${r.app_id}`}>{r.name ?? '(unnamed)'}</Link>
-                <span className="dim"> · {r.developer ?? '—'}</span>
-                {r.cold_start && <span className="tag" title="Scored from backfilled review history, not yet from our own snapshots">cold start</span>}
-                {r.clone_suspect && <span className="tag warn">clone farm</span>}
-              </td>
-              <td>{r.store}</td>
-              <td className="num">{r.age_days ?? '—'}d</td>
-              <td className="num">
-                {formatNumber(r.velocity_per_day)}
-                <span className="dim unit"> {velocityLabel(r.store)}</span>
-              </td>
-              <td className="num">{r.chart_rank ? `#${r.chart_rank}` : '—'}</td>
-              <td className="dim">{r.discovered_via ?? '—'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {error && <p className="error">{error}</p>}
 
-      {rows.length === 0 && <p className="empty">No apps match these filters.</p>}
+      {!error && (
+        <table>
+          <thead>
+            <tr>
+              <th className="num">#</th>
+              <th className="num">Score</th>
+              <th>App</th>
+              <th>Store</th>
+              <th className="num">Age</th>
+              <th className="num">Velocity</th>
+              <th className="num">Rank</th>
+              <th>Found via</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.app_id}>
+                <td className="num dim">{i + 1}</td>
+                <td className="num strong">{Number(r.score).toFixed(2)}</td>
+                <td>
+                  <Link href={`/app/${r.app_id}`}>{r.name ?? '(unnamed)'}</Link>
+                  <span className="dim"> · {r.developer ?? '—'}</span>
+                  {r.cold_start && (
+                    <span className="tag" title="Scored from backfilled review history, not yet from our own snapshots">
+                      cold start
+                    </span>
+                  )}
+                  {r.clone_suspect && <span className="tag warn">clone farm</span>}
+                </td>
+                <td>{r.store}</td>
+                <td className="num">{r.age_days ?? '—'}d</td>
+                <td className="num">
+                  {formatNumber(r.velocity_per_day)}
+                  <span className="dim unit"> {velocityLabel(r.store)}</span>
+                </td>
+                <td className="num">{r.chart_rank ? `#${r.chart_rank}` : '—'}</td>
+                <td className="dim">{r.discovered_via ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {!error && rows.length === 0 && <p className="empty">No apps match these filters.</p>}
 
       <footer className="note">
         Velocity is exact daily installs on Play and daily rating counts on iOS. The two are
-        never combined — scores are ranked within a store, so an app only ever competes with
-        apps measured the same way.
+        never combined — scores are ranked within a store, so an app only competes with apps
+        measured the same way. Velocity is blank until an app has two days of snapshots.
       </footer>
     </main>
   );
